@@ -30,7 +30,7 @@ pnpm build
 2. リポジトリの **Settings → Pages → Build and deployment → Source** を **GitHub Actions** に設定します。
 3. `.github/workflows/deploy.yml` がインストール・ビルド・公開を行います。リポジトリ名からViteの `base` を設定し、`<user>.github.io` のルートサイトも扱います。
 
-この環境には公開先リポジトリが指定されていないため、公開作業そのものは未実施です。
+公開URL: https://lying-down-lai.github.io/yohaku-offline-planner/
 
 ## 構成とデータの流れ
 
