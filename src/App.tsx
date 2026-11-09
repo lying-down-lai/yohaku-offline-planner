@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Fragment, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { format, isSameDay, parseISO, startOfDay } from 'date-fns'
 import { ja } from 'date-fns/locale'
@@ -6,7 +6,9 @@ import { db, replaceAll } from './db'
 import { compareItemTime, defaultSettings, newItem, type PlannerItem, type PlannerSettings } from './model'
 import { conflictsWithExisting, scheduleTasks } from './scheduler'
 import { InAppDelivery, dueReminders, type ReminderNotice } from './reminders'
-import { createBackup, makeExtractionPrompt, makeImageExtractionPrompt, parseAiImport, parseBackup } from './transfer'
+import { createBackup, makeExtractionPrompt, makeImageExtractionPrompt, parseAiImport, parseBackup, withoutDuplicateEvents } from './transfer'
+import { formatGap, getTodayFlow } from './todayFlow'
+import { PlanningPanel } from './PlanningPanel'
 
 type Tab = 'today' | 'tasks' | 'calendar' | 'tools'
 type InstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> }
@@ -33,10 +35,6 @@ function prettyDate(value: string | null, withDay = true): string {
   return format(parseISO(value), withDay ? 'M月d日 (EEE) HH:mm' : 'HH:mm', { locale: ja })
 }
 
-function isToday(value: string | null): boolean {
-  return Boolean(value && isSameDay(parseISO(value), new Date()))
-}
-
 function describeError(error: unknown): string {
   if (error && typeof error === 'object' && 'issues' in error && Array.isArray(error.issues)) {
     return String(error.issues[0]?.message ?? '形式が正しくありません')
@@ -52,6 +50,19 @@ function saveTextFile(text: string, filename: string): void {
   link.download = filename
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function prepareAiItems(text: string, existing: PlannerItem[]) {
+  const deduplicated = withoutDuplicateEvents(parseAiImport(text), existing)
+  const additions: PlannerItem[] = []
+  for (const item of deduplicated.items) {
+    additions.push({
+      ...item,
+      needsReview: item.needsReview || conflictsWithExisting(item, [...existing, ...additions]) ||
+        Boolean(item.type === 'task' && item.deadline && item.endAt && Date.parse(item.endAt) > Date.parse(item.deadline))
+    })
+  }
+  return { items: additions, duplicates: deduplicated.duplicates }
 }
 
 function ItemEditor({ item, items, onClose, onSaved }: {
@@ -79,8 +90,9 @@ function ItemEditor({ item, items, onClose, onSaved }: {
     if (draft.startAt && draft.endAt && Date.parse(draft.endAt) <= Date.parse(draft.startAt)) {
       setError('終了は開始より後にしてください'); return
     }
-    if (draft.type === 'task' && (!draft.estimatedMinutes || draft.estimatedMinutes < 1 || draft.estimatedMinutes > 1440)) {
-      setError('所要時間は1～1440分で入力してください'); return
+    if (draft.type === 'task' && draft.estimatedMinutes !== null &&
+      (draft.estimatedMinutes < 1 || draft.estimatedMinutes > 1440)) {
+      setError('所要時間は未設定、または1～1440分で入力してください'); return
     }
     if (draft.type === 'task' && draft.deadline && draft.endAt && Date.parse(draft.endAt) > Date.parse(draft.deadline)) {
       setError('配置した時間が期限を超えています'); return
@@ -148,7 +160,7 @@ function ItemCard({ item, onEdit, onComplete, onReopen, onDelete }: {
     <div className="item-body">
       <div className="item-topline"><span className="item-kind">{item.type === 'task' ? 'タスク' : '予定'}</span>{item.needsReview && <span className="review-tag">要確認</span>}{item.completedAt && <span className="done-tag">完了</span>}</div>
       <h3>{item.title}</h3>
-      <p className="item-time">{time}{item.startAt && item.endAt ? ` – ${prettyDate(item.endAt, false)}` : ''}</p>
+      <p className="item-time">{time}{item.startAt && item.endAt ? ` – ${prettyDate(item.endAt, !isSameDay(parseISO(item.startAt), parseISO(item.endAt)))}` : ''}</p>
       {item.notes && <p className="item-notes">{item.notes}</p>}
       {item.type === 'task' && <p className="item-meta">{item.estimatedMinutes ?? '?'}分 · 重要度 {item.importance ?? '未設定'}</p>}
       <div className="item-actions">
@@ -171,6 +183,8 @@ export default function App() {
   const [toast, setToast] = useState('')
   const [notices, setNotices] = useState<ReminderNotice[]>([])
   const [aiText, setAiText] = useState('')
+  const [aiPreview, setAiPreview] = useState<ReturnType<typeof prepareAiItems> | null>(null)
+  const [quickText, setQuickText] = useState('')
   const [shownPrompt, setShownPrompt] = useState<'text' | 'image' | null>(null)
   const [installPrompt, setInstallPrompt] = useState<InstallPrompt | null>(null)
   const [online, setOnline] = useState(navigator.onLine)
@@ -222,14 +236,25 @@ export default function App() {
   const completedTasks = useMemo(() => items.filter(item => item.type === 'task' && item.completedAt), [items])
   const reviewEvents = useMemo(() => items.filter(item => item.type === 'event' && item.needsReview), [items])
   const reviewCount = items.filter(item => item.needsReview).length
-  const todayItems = items.filter(item => !item.completedAt && (isToday(item.startAt) || (!item.startAt && isToday(item.deadline))))
-    .sort(compareItemTime)
+  const todayFlow = getTodayFlow(items, new Date())
   const calendarItems = items.filter(item => item.startAt && format(parseISO(item.startAt), 'yyyy-MM-dd') === selectedDate)
     .sort(compareItemTime)
   const unscheduledCount = activeTasks.filter(item => !item.startAt && !item.needsReview).length
-  const todayCount = todayItems.length
+  const schedulableCount = activeTasks.filter(item => !item.startAt && !item.needsReview && item.estimatedMinutes !== null).length
+  const todayCount = todayFlow.length
 
   function saved(message: string) { setEditing(null); setToast(message) }
+
+  async function quickCapture(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const raw = quickText.trim()
+    if (!raw) return
+    try {
+      await db.items.add({ ...newItem('task'), title: raw.slice(0, 200), notes: raw.length > 200 ? raw : '', sourceText: raw })
+      setQuickText('')
+      setToast('メモしたタスクを保存しました')
+    } catch (error) { setToast(describeError(error)) }
+  }
 
   async function complete(item: PlannerItem) {
     if (!window.confirm(`「${item.title}」を完了にしますか？`)) return
@@ -270,24 +295,28 @@ export default function App() {
     finally { setSavingSettings(false) }
   }
 
+  function checkAi() {
+    try { setAiPreview(prepareAiItems(aiText, items)) }
+    catch (error) { setAiPreview(null); setToast(`JSONを確認してください: ${describeError(error)}`) }
+  }
+
   async function importAi() {
+    if (!aiPreview) return
     try {
-      const imported: PlannerItem[] = []
-      for (const item of parseAiImport(aiText)) {
-        imported.push({
-          ...item,
-          needsReview: item.needsReview || conflictsWithExisting(item, [...items, ...imported]) ||
-            Boolean(item.type === 'task' && item.deadline && item.endAt && Date.parse(item.endAt) > Date.parse(item.deadline))
-        })
-      }
-      if (!imported.length) { setToast('取り込む項目がありません'); return }
-      const review = imported.filter(item => item.needsReview).length
-      if (!window.confirm(`${imported.length}件を追加します。${review ? `うち${review}件は確認が必要です。` : ''}続けますか？`)) return
-      await db.items.bulkAdd(imported)
+      let added = 0
+      let skipped = 0
+      await db.transaction('rw', db.items, async () => {
+        const latest = await db.items.toArray()
+        const prepared = prepareAiItems(aiText, latest)
+        if (prepared.items.length) await db.items.bulkAdd(prepared.items)
+        added = prepared.items.length
+        skipped = prepared.duplicates.length
+      })
       setAiText('')
-      setTab('tasks')
-      setToast(`${imported.length}件を取り込みました`)
-    } catch (error) { setToast(`JSONを確認してください: ${describeError(error)}`) }
+      setAiPreview(null)
+      if (added) setTab('tasks')
+      setToast(`${added}件を取り込みました${skipped ? `。重複${skipped}件は追加していません` : ''}`)
+    } catch (error) { setToast(`取り込めませんでした: ${describeError(error)}`) }
   }
 
   async function restore(file: File | undefined) {
@@ -321,18 +350,20 @@ export default function App() {
       {notices.length > 0 && <section className="notice-list" aria-live="polite">{notices.map(notice => <div className="notice" key={notice.key}><span className="notice-symbol">✦</span><div><strong>{notice.title}</strong><p>{notice.message}</p></div><button type="button" aria-label="通知を閉じる" onClick={() => setNotices(current => current.filter(entry => entry.key !== notice.key))}>×</button></div>)}</section>}
       {tab === 'today' && <>
         <section className="page-intro"><p className="eyebrow">YOUR SPACE, YOUR PACE</p><h1>今日を、<br /><em>心地よく整える。</em></h1><p className="intro-date">{format(new Date(), 'yyyy年M月d日 EEEE', { locale: ja })}</p></section>
+        <form className="quick-capture" onSubmit={event => void quickCapture(event)}><label htmlFor="quick-task">思いついたことをすぐに記録</label><div><input id="quick-task" value={quickText} onChange={event => setQuickText(event.target.value)} maxLength={10000} placeholder="例：金曜までにレポートを提出" /><button className="button primary" type="submit" disabled={!quickText.trim()}>保存</button></div></form>
         <div className="overview-grid">
           <div className="overview-card dark"><span>今日の予定とタスク</span><strong>{todayCount}<small>件</small></strong><p>目の前のことから、ひとつずつ。</p></div>
           <div className="overview-card light"><span>配置待ちのタスク</span><strong>{unscheduledCount}<small>件</small></strong><button type="button" onClick={() => setTab('tasks')}>確認する <span aria-hidden="true">↗</span></button></div>
         </div>
         <div className="section-heading"><div><p className="eyebrow">TODAY'S FLOW</p><h2>今日の流れ</h2></div><button className="link-arrow" type="button" onClick={() => setTab('calendar')}>予定を見る ↗</button></div>
-        {todayItems.length ? <div className="cards">{todayItems.map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div> : <div className="empty-state"><span className="empty-illustration">✳</span><h3>今日はまだ余白があります</h3><p>予定やタスクを追加して、一日を整えましょう。</p><button className="button primary" type="button" onClick={() => setEditing(newItem('task'))}>タスクを追加</button></div>}
+        {todayFlow.length ? <div className="cards">{todayFlow.map(({ item, gapBeforeMinutes }) => <Fragment key={item.id}>{gapBeforeMinutes !== null && <div className="flow-gap" aria-label={`予定の合間に${formatGap(gapBeforeMinutes)}の空き時間`}><span>空き時間</span><strong>{formatGap(gapBeforeMinutes)}</strong></div>}<ItemCard item={item} {...cardHandlers} /></Fragment>)}</div> : <div className="empty-state"><span className="empty-illustration">✳</span><h3>今日はまだ余白があります</h3><p>予定やタスクを追加して、一日を整えましょう。</p><button className="button primary" type="button" onClick={() => setEditing(newItem('task'))}>タスクを追加</button></div>}
         {reviewCount > 0 && <button type="button" className="review-banner" onClick={() => setTab('tasks')}>確認が必要な項目が{reviewCount}件あります <span>→</span></button>}
       </>}
 
       {tab === 'tasks' && <>
         <section className="page-title"><p className="eyebrow">TO-DO LIST</p><h1>タスク</h1><p>やることを整理して、空いている時間に配置できます。</p></section>
-        <div className="toolbar"><button className="button primary" type="button" onClick={() => setEditing(newItem('task'))}>＋ タスクを追加</button><button className="button secondary" type="button" onClick={() => void autoSchedule()} disabled={!unscheduledCount}>空き時間に配置</button></div>
+        <div className="toolbar"><button className="button primary" type="button" onClick={() => setEditing(newItem('task'))}>＋ タスクを追加</button><button className="button secondary" type="button" onClick={() => void autoSchedule()} disabled={!schedulableCount}>空き時間に配置</button></div>
+        {unscheduledCount > 0 && !schedulableCount && <p className="hint">所要時間が未設定のタスクは、編集するかAIの計画提案で見積もれます。</p>}
         <div className="section-heading compact"><h2>進行中 <span className="count">{activeTasks.length}</span></h2></div>
         {activeTasks.length ? <div className="cards">{activeTasks.slice().sort((a, b) => Number(b.needsReview) - Number(a.needsReview) || (a.deadline ?? '9999').localeCompare(b.deadline ?? '9999')).map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div> : <div className="empty-state"><span className="empty-illustration">✓</span><h3>進行中のタスクはありません</h3><p>新しいタスクを追加しましょう。</p></div>}
         {reviewEvents.length > 0 && <><div className="section-heading compact"><h2>確認が必要な予定 <span className="count">{reviewEvents.length}</span></h2></div><div className="cards">{reviewEvents.map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div></>}
@@ -352,8 +383,19 @@ export default function App() {
           <div className="form-row settings-row"><label>開始<input type="time" value={settings.workStart} onChange={event => void updateSettings({ ...settings, workStart: event.target.value })} disabled={savingSettings} /></label><label>終了<input type="time" value={settings.workEnd} onChange={event => void updateSettings({ ...settings, workEnd: event.target.value })} disabled={savingSettings} /></label></div>
           <label className="check-label"><input type="checkbox" checked={settings.includeWeekends} onChange={event => void updateSettings({ ...settings, includeWeekends: event.target.checked })} />週末も配置する</label>
         </section>
+        <section className="panel"><div className="panel-head"><span className="panel-icon">☾</span><div><h2>睡眠の目安</h2><p>AIが仮の睡眠枠を提案するときの目標です。</p></div></div><label>1日の目安<select value={settings.sleepTargetMinutes} onChange={event => void updateSettings({ ...settings, sleepTargetMinutes: Number(event.target.value) })} disabled={savingSettings}>{Array.from({ length: 17 }, (_, index) => (index + 8) * 30).map(minutes => <option key={minutes} value={minutes}>{minutes / 60}時間</option>)}</select></label><p className="hint">睡眠枠は提案を確認してから追加され、あとで編集できます。</p></section>
         <section className="panel"><div className="panel-head"><span className="panel-icon">⇄</span><div><h2>バックアップ</h2><p>JSONファイルに保存・復元できます。</p></div></div><div className="button-row"><button type="button" className="button secondary" onClick={() => saveTextFile(createBackup(items, settings), `yohaku-backup-${format(new Date(), 'yyyy-MM-dd')}.json`)}>バックアップを保存</button><label className="button secondary file-button">ファイルから復元<input type="file" accept=".json,application/json" onChange={event => { void restore(event.target.files?.[0]); event.target.value = '' }} /></label></div><p className="hint">復元すると現在のデータは置き換わります。端末間の自動同期はありません。</p></section>
-        <section className="panel"><div className="panel-head"><span className="panel-icon">✧</span><div><h2>外部AIから取り込む</h2><p>文章や予定の画像を外部AIに読み取らせ、結果だけ取り込みます。</p></div></div><ol className="steps"><li>文章用または画像用のプロンプトをコピーし、外部AIに文章または画像と一緒に送る</li><li>返ってきたJSONを下に貼り付ける</li><li>日時と内容を確認して取り込む</li></ol><div className="button-row"><button type="button" className="button secondary" onClick={() => void copyPrompt('text')}>抽出用プロンプトをコピー</button><button type="button" className="button secondary" onClick={() => void copyPrompt('image')}>画像から予定を抽出するプロンプトをコピー</button><button type="button" className="button secondary" onClick={() => setShownPrompt(value => value ? null : 'text')}>{shownPrompt ? 'プロンプトを閉じる' : 'プロンプトを表示'}</button></div>{shownPrompt && <textarea readOnly rows={10} value={shownPrompt === 'image' ? makeImageExtractionPrompt() : makeExtractionPrompt()} aria-label={shownPrompt === 'image' ? '画像用プロンプト' : '抽出用プロンプト'} style={{ marginTop: 14 }} />}<label className="json-label">AIが返したJSON<textarea rows={7} spellCheck={false} value={aiText} onChange={event => setAiText(event.target.value)} placeholder={'{"schemaVersion":1,"items":[]}'} /></label><button type="button" className="button primary" disabled={!aiText.trim()} onClick={() => void importAi()}>JSONを検証して取り込む</button><p className="hint">取り込んだ日時や内容は編集できます。不明な予定は「要確認」として残ります。</p></section>
+        <section className="panel">
+          <div className="panel-head"><span className="panel-icon">✧</span><div><h2>外部AIから取り込む</h2><p>文章や予定の画像を外部AIに読み取らせ、結果だけ取り込みます。</p></div></div>
+          <ol className="steps"><li>文章用または画像用のプロンプトをコピーし、外部AIに文章または画像と一緒に送る</li><li>返ってきたJSONを下に貼り付ける</li><li>内容を確認して取り込む</li></ol>
+          <div className="button-row"><button type="button" className="button secondary" onClick={() => void copyPrompt('text')}>抽出用プロンプトをコピー</button><button type="button" className="button secondary" onClick={() => void copyPrompt('image')}>画像から予定を抽出するプロンプトをコピー</button><button type="button" className="button secondary" onClick={() => setShownPrompt(value => value ? null : 'text')}>{shownPrompt ? 'プロンプトを閉じる' : 'プロンプトを表示'}</button></div>
+          {shownPrompt && <textarea readOnly rows={10} value={shownPrompt === 'image' ? makeImageExtractionPrompt() : makeExtractionPrompt()} aria-label={shownPrompt === 'image' ? '画像用プロンプト' : '抽出用プロンプト'} style={{ marginTop: 14 }} />}
+          <label className="json-label">AIが返したJSON<textarea rows={7} spellCheck={false} value={aiText} onChange={event => { setAiText(event.target.value); setAiPreview(null) }} placeholder={'{"schemaVersion":1,"items":[]}'} /></label>
+          <button type="button" className="button secondary" disabled={!aiText.trim()} onClick={checkAi}>JSONを検証して確認</button>
+          {aiPreview && <div className="plan-preview" aria-label="取り込み内容の確認"><h3>取り込み前の確認</h3><p>{aiPreview.items.length}件を追加・{aiPreview.duplicates.length}件の重複を除外</p><ul>{aiPreview.items.map(item => <li key={item.id}><strong>{item.title}</strong> · {item.startAt ? prettyDate(item.startAt) : item.deadline ? `期限 ${prettyDate(item.deadline)}` : '日時未設定'}{item.needsReview ? ' · 要確認' : ''}</li>)}</ul>{aiPreview.duplicates.length > 0 && <p className="hint">同じタイトル・開始・終了の予定は追加しません。</p>}<button type="button" className="button primary" disabled={!aiPreview.items.length} onClick={() => void importAi()}>この内容を取り込む</button></div>}
+          <p className="hint">取り込んだ日時や内容は編集できます。不明な予定は「要確認」として残ります。</p>
+        </section>
+        <PlanningPanel items={items} settings={settings} onApplied={message => { setTab('today'); setToast(message) }} />
         <section className="panel"><div className="panel-head"><span className="panel-icon">▣</span><div><h2>アプリとして使う</h2><p>ホーム画面に追加すると、全画面に近い表示で使えます。</p></div></div>{installPrompt ? <button className="button primary" type="button" onClick={() => { void installPrompt.prompt(); setInstallPrompt(null) }}>インストールする</button> : <p className="hint">Android: ブラウザの「インストール」または「ホーム画面に追加」。iPhone: Safariの共有メニューから「ホーム画面に追加」。</p>}<p className="hint">リマインダーはアプリを開いているときに表示されます。</p></section>
       </>}
     </main>

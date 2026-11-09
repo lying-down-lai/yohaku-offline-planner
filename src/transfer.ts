@@ -35,7 +35,8 @@ const settingsSchema = z.object({
   id: z.literal('main'),
   workStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   workEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-  includeWeekends: z.boolean()
+  includeWeekends: z.boolean(),
+  sleepTargetMinutes: z.number().int().min(240).max(720).default(480)
 }).strict().refine(value => value.workStart < value.workEnd, '作業終了時刻は開始時刻より後にしてください')
 
 const storedItemSchema = aiItemSchema.safeExtend({
@@ -80,6 +81,27 @@ export function parseAiImport(text: string): PlannerItem[] {
     createdAt: now,
     updatedAt: now
   }))
+}
+
+export function withoutDuplicateEvents(imported: PlannerItem[], existing: PlannerItem[]): {
+  items: PlannerItem[]
+  duplicates: PlannerItem[]
+} {
+  const items: PlannerItem[] = []
+  const duplicates: PlannerItem[] = []
+  const seen = [...existing]
+  const titleKey = (title: string) => title.normalize('NFKC').replace(/\s+/g, '').toLocaleLowerCase()
+  for (const item of imported) {
+    const duplicate = item.type === 'event' && item.startAt && item.endAt && seen.some(other =>
+      other.type === 'event' && other.startAt && other.endAt &&
+      titleKey(other.title) === titleKey(item.title) &&
+      Date.parse(other.startAt) === Date.parse(item.startAt!) &&
+      Date.parse(other.endAt) === Date.parse(item.endAt!)
+    )
+    if (duplicate) duplicates.push(item)
+    else { items.push(item); seen.push(item) }
+  }
+  return { items, duplicates }
 }
 
 export function createBackup(items: PlannerItem[], settings: PlannerSettings): string {

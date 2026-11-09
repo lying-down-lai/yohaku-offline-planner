@@ -14,4 +14,9 @@ describe('dueReminders', () => {
     const now = new Date('2026-11-09T09:55:00+09:00')
     expect(dueReminders([{ ...item, completedAt: now.toISOString() }, { ...item, id: 'uncertain', needsReview: true }], now)).toHaveLength(0)
   })
+
+  it('does not describe an already missed event as upcoming', () => {
+    const event = { ...newItem('event'), title: '過去の会議', startAt: '2026-11-09T09:00:00+09:00', endAt: '2026-11-09T10:00:00+09:00', reminderMinutes: 10 }
+    expect(dueReminders([event], new Date('2026-11-09T15:00:00+09:00'))).toHaveLength(0)
+  })
 })

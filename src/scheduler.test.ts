@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { newItem, type PlannerItem, type PlannerSettings } from './model'
+import { defaultSettings, newItem, type PlannerItem, type PlannerSettings } from './model'
 import { scheduleTasks } from './scheduler'
 
-const settings: PlannerSettings = { id: 'main', workStart: '09:00', workEnd: '18:00', includeWeekends: false }
+const settings: PlannerSettings = { ...defaultSettings }
 const at = (hour: number, minute = 0) => new Date(2026, 10, 9, hour, minute)
 
 function task(overrides: Partial<PlannerItem> = {}): PlannerItem {

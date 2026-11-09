@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { defaultSettings, newItem } from './model'
-import { createBackup, makeExtractionPrompt, makeImageExtractionPrompt, parseAiImport, parseBackup } from './transfer'
+import { createBackup, makeExtractionPrompt, makeImageExtractionPrompt, parseAiImport, parseBackup, withoutDuplicateEvents } from './transfer'
 
 describe('validated JSON transfer', () => {
   it('instructs both extraction workflows to return offset-aware datetimes with seconds', () => {
@@ -37,11 +37,28 @@ describe('validated JSON transfer', () => {
     expect(restored.settings).toEqual(defaultSettings)
   })
 
+  it('restores older backups with a default sleep target', () => {
+    const olderSettings = { id: 'main', workStart: '09:00', workEnd: '18:00', includeWeekends: false }
+    const restored = parseBackup(JSON.stringify({
+      schemaVersion: 1, exportedAt: new Date().toISOString(), settings: olderSettings, items: []
+    }))
+    expect(restored.settings.sleepTargetMinutes).toBe(480)
+  })
+
   it('rejects invalid event times before import', () => {
     expect(() => parseAiImport(JSON.stringify({ schemaVersion: 1, items: [{
       type: 'event', title: '不正な予定', startAt: '2026-11-09T12:00:00+09:00',
       endAt: '2026-11-09T11:00:00+09:00', deadline: null, estimatedMinutes: null,
       importance: null, fixed: true, needsReview: false, sourceText: '不正な予定'
     }] }))).toThrow()
+  })
+
+  it('skips repeated fixed events from screenshots without hiding incomplete ones', () => {
+    const existing = { ...newItem('event'), title: '  授業 ', startAt: '2026-11-09T09:00:00+09:00', endAt: '2026-11-09T10:00:00+09:00' }
+    const repeated = { ...newItem('event'), title: '授業', startAt: '2026-11-09T00:00:00Z', endAt: '2026-11-09T01:00:00Z' }
+    const incomplete = { ...newItem('event'), title: '授業', needsReview: true }
+    const result = withoutDuplicateEvents([repeated, incomplete], [existing])
+    expect(result.duplicates).toEqual([repeated])
+    expect(result.items).toEqual([incomplete])
   })
 })

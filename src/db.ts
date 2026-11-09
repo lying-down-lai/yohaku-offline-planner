@@ -13,6 +13,13 @@ class PlannerDB extends Dexie {
       settings: 'id',
       reminders: 'key, itemId'
     })
+    this.version(2).stores({
+      items: 'id, type, startAt, deadline, completedAt',
+      settings: 'id',
+      reminders: 'key, itemId'
+    }).upgrade(tx => tx.table('settings').toCollection().modify(setting => {
+      if (setting.sleepTargetMinutes == null) setting.sleepTargetMinutes = 480
+    }))
   }
 }
 

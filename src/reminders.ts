@@ -30,11 +30,13 @@ export function dueReminders(items: PlannerItem[], now: Date): ReminderNotice[] 
     const targetTime = parseISO(target).getTime()
     const remindAt = targetTime - item.reminderMinutes * 60_000
     if (now.getTime() < remindAt || now.getTime() > targetTime + 24 * 60 * 60_000) continue
+    if (item.type === 'event' && now.getTime() > targetTime) continue
+    if (item.type === 'task' && item.startAt && item.endAt && now.getTime() > parseISO(item.endAt).getTime()) continue
     notices.push({
       key: `${item.id}:${target}`,
       itemId: item.id,
       title: item.title,
-      message: item.type === 'event' ? '予定の時間が近づいています' : item.startAt ? 'タスクの開始時間が近づいています' : '期限が近づいています'
+      message: item.type === 'event' ? '予定の時間が近づいています' : item.startAt ? 'タスクの開始時間が近づいています' : now.getTime() > targetTime ? '期限を過ぎています' : '期限が近づいています'
     })
   }
   return notices

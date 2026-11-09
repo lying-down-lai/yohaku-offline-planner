@@ -24,6 +24,7 @@ export interface PlannerSettings {
   workStart: string
   workEnd: string
   includeWeekends: boolean
+  sleepTargetMinutes: number
 }
 
 export interface ReminderRecord {
@@ -44,7 +45,8 @@ export const defaultSettings: PlannerSettings = {
   id: 'main',
   workStart: '09:00',
   workEnd: '18:00',
-  includeWeekends: false
+  includeWeekends: false,
+  sleepTargetMinutes: 480
 }
 
 export function newItem(type: ItemType): PlannerItem {
@@ -57,8 +59,8 @@ export function newItem(type: ItemType): PlannerItem {
     startAt: null,
     endAt: null,
     deadline: null,
-    estimatedMinutes: type === 'task' ? 30 : null,
-    importance: type === 'task' ? 3 : null,
+    estimatedMinutes: null,
+    importance: null,
     fixed: type === 'event',
     needsReview: false,
     sourceText: '',
