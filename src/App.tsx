@@ -3,7 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { format, isSameDay, parseISO, startOfDay } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import { db, replaceAll } from './db'
-import { defaultSettings, newItem, type PlannerItem, type PlannerSettings } from './model'
+import { compareItemTime, defaultSettings, newItem, type PlannerItem, type PlannerSettings } from './model'
 import { conflictsWithExisting, scheduleTasks } from './scheduler'
 import { InAppDelivery, dueReminders, type ReminderNotice } from './reminders'
 import { createBackup, makeExtractionPrompt, makeImageExtractionPrompt, parseAiImport, parseBackup } from './transfer'
@@ -223,9 +223,9 @@ export default function App() {
   const reviewEvents = useMemo(() => items.filter(item => item.type === 'event' && item.needsReview), [items])
   const reviewCount = items.filter(item => item.needsReview).length
   const todayItems = items.filter(item => !item.completedAt && (isToday(item.startAt) || (!item.startAt && isToday(item.deadline))))
-    .sort((a, b) => (a.startAt ?? a.deadline ?? '').localeCompare(b.startAt ?? b.deadline ?? ''))
+    .sort(compareItemTime)
   const calendarItems = items.filter(item => item.startAt && format(parseISO(item.startAt), 'yyyy-MM-dd') === selectedDate)
-    .sort((a, b) => (a.startAt ?? '').localeCompare(b.startAt ?? ''))
+    .sort(compareItemTime)
   const unscheduledCount = activeTasks.filter(item => !item.startAt && !item.needsReview).length
   const todayCount = todayItems.length
 

@@ -32,6 +32,14 @@ export interface ReminderRecord {
   firedAt: string
 }
 
+export function compareItemTime(a: PlannerItem, b: PlannerItem): number {
+  const time = (item: PlannerItem) => {
+    const value = item.startAt ?? item.deadline
+    return value ? Date.parse(value) : Number.MAX_SAFE_INTEGER
+  }
+  return time(a) - time(b)
+}
+
 export const defaultSettings: PlannerSettings = {
   id: 'main',
   workStart: '09:00',
