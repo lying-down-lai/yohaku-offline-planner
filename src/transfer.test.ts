@@ -1,8 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import { defaultSettings, newItem } from './model'
-import { createBackup, parseAiImport, parseBackup } from './transfer'
+import { createBackup, makeExtractionPrompt, makeImageExtractionPrompt, parseAiImport, parseBackup } from './transfer'
 
 describe('validated JSON transfer', () => {
+  it('instructs both extraction workflows to return offset-aware datetimes with seconds', () => {
+    for (const prompt of [makeExtractionPrompt(), makeImageExtractionPrompt()]) {
+      expect(prompt).toContain('YYYY-MM-DDTHH:mm:ss±HH:mm')
+      expect(prompt).toContain('Use 24-hour time')
+      expect(prompt).toContain('If a full date and time cannot be determined, use null')
+      expect(prompt).toContain('Timezone (IANA):')
+    }
+  })
+
+  it('gives image extraction its own source instructions', () => {
+    const prompt = makeImageExtractionPrompt()
+    expect(prompt).toContain('Image(s) attached to this message')
+    expect(prompt).toContain('Match each title to its date column, time row')
+    expect(prompt).toContain('sourceText must contain a short transcription')
+    expect(prompt).not.toContain('INPUT_TEXT:')
+  })
+
   it('retains uncertain events for review', () => {
     const result = parseAiImport(JSON.stringify({
       schemaVersion: 1,

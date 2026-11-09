@@ -6,7 +6,7 @@ import { db, replaceAll } from './db'
 import { defaultSettings, newItem, type PlannerItem, type PlannerSettings } from './model'
 import { conflictsWithExisting, scheduleTasks } from './scheduler'
 import { InAppDelivery, dueReminders, type ReminderNotice } from './reminders'
-import { createBackup, makeExtractionPrompt, parseAiImport, parseBackup } from './transfer'
+import { createBackup, makeExtractionPrompt, makeImageExtractionPrompt, parseAiImport, parseBackup } from './transfer'
 
 type Tab = 'today' | 'tasks' | 'calendar' | 'tools'
 type InstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> }
@@ -171,7 +171,7 @@ export default function App() {
   const [toast, setToast] = useState('')
   const [notices, setNotices] = useState<ReminderNotice[]>([])
   const [aiText, setAiText] = useState('')
-  const [promptOpen, setPromptOpen] = useState(false)
+  const [shownPrompt, setShownPrompt] = useState<'text' | 'image' | null>(null)
   const [installPrompt, setInstallPrompt] = useState<InstallPrompt | null>(null)
   const [online, setOnline] = useState(navigator.onLine)
   const [savingSettings, setSavingSettings] = useState(false)
@@ -300,8 +300,12 @@ export default function App() {
     } catch (error) { setToast(`復元できませんでした: ${describeError(error)}`) }
   }
 
-  async function copyPrompt() {
-    try { await navigator.clipboard.writeText(makeExtractionPrompt()); setToast('プロンプトをコピーしました') }
+  async function copyPrompt(source: 'text' | 'image') {
+    try {
+      await navigator.clipboard.writeText(source === 'image' ? makeImageExtractionPrompt() : makeExtractionPrompt())
+      setShownPrompt(source)
+      setToast(source === 'image' ? '画像用プロンプトをコピーしました' : 'プロンプトをコピーしました')
+    }
     catch { setToast('コピーできませんでした。ブラウザの権限を確認してください') }
   }
 
@@ -349,7 +353,7 @@ export default function App() {
           <label className="check-label"><input type="checkbox" checked={settings.includeWeekends} onChange={event => void updateSettings({ ...settings, includeWeekends: event.target.checked })} />週末も配置する</label>
         </section>
         <section className="panel"><div className="panel-head"><span className="panel-icon">⇄</span><div><h2>バックアップ</h2><p>JSONファイルに保存・復元できます。</p></div></div><div className="button-row"><button type="button" className="button secondary" onClick={() => saveTextFile(createBackup(items, settings), `yohaku-backup-${format(new Date(), 'yyyy-MM-dd')}.json`)}>バックアップを保存</button><label className="button secondary file-button">ファイルから復元<input type="file" accept=".json,application/json" onChange={event => { void restore(event.target.files?.[0]); event.target.value = '' }} /></label></div><p className="hint">復元すると現在のデータは置き換わります。端末間の自動同期はありません。</p></section>
-        <section className="panel"><div className="panel-head"><span className="panel-icon">✧</span><div><h2>外部AIから取り込む</h2><p>文章の整理を外部AIに依頼し、結果だけ取り込みます。</p></div></div><ol className="steps"><li>プロンプトをコピーし、外部AIに文章と一緒に送る</li><li>返ってきたJSONを下に貼り付ける</li><li>内容を確認して取り込む</li></ol><div className="button-row"><button type="button" className="button secondary" onClick={() => void copyPrompt()}>抽出用プロンプトをコピー</button><button type="button" className="button secondary" onClick={() => setPromptOpen(value => !value)}>{promptOpen ? 'プロンプトを閉じる' : 'プロンプトを表示'}</button></div>{promptOpen && <textarea readOnly rows={10} value={makeExtractionPrompt()} aria-label="抽出用プロンプト" style={{ marginTop: 14 }} />}<label className="json-label">AIが返したJSON<textarea rows={7} spellCheck={false} value={aiText} onChange={event => setAiText(event.target.value)} placeholder={'{"schemaVersion":1,"items":[]}'} /></label><button type="button" className="button primary" disabled={!aiText.trim()} onClick={() => void importAi()}>JSONを検証して取り込む</button><p className="hint">取り込んだ日時や内容は編集できます。不明な予定は「要確認」として残ります。</p></section>
+        <section className="panel"><div className="panel-head"><span className="panel-icon">✧</span><div><h2>外部AIから取り込む</h2><p>文章や予定の画像を外部AIに読み取らせ、結果だけ取り込みます。</p></div></div><ol className="steps"><li>文章用または画像用のプロンプトをコピーし、外部AIに文章または画像と一緒に送る</li><li>返ってきたJSONを下に貼り付ける</li><li>日時と内容を確認して取り込む</li></ol><div className="button-row"><button type="button" className="button secondary" onClick={() => void copyPrompt('text')}>抽出用プロンプトをコピー</button><button type="button" className="button secondary" onClick={() => void copyPrompt('image')}>画像から予定を抽出するプロンプトをコピー</button><button type="button" className="button secondary" onClick={() => setShownPrompt(value => value ? null : 'text')}>{shownPrompt ? 'プロンプトを閉じる' : 'プロンプトを表示'}</button></div>{shownPrompt && <textarea readOnly rows={10} value={shownPrompt === 'image' ? makeImageExtractionPrompt() : makeExtractionPrompt()} aria-label={shownPrompt === 'image' ? '画像用プロンプト' : '抽出用プロンプト'} style={{ marginTop: 14 }} />}<label className="json-label">AIが返したJSON<textarea rows={7} spellCheck={false} value={aiText} onChange={event => setAiText(event.target.value)} placeholder={'{"schemaVersion":1,"items":[]}'} /></label><button type="button" className="button primary" disabled={!aiText.trim()} onClick={() => void importAi()}>JSONを検証して取り込む</button><p className="hint">取り込んだ日時や内容は編集できます。不明な予定は「要確認」として残ります。</p></section>
         <section className="panel"><div className="panel-head"><span className="panel-icon">▣</span><div><h2>アプリとして使う</h2><p>ホーム画面に追加すると、全画面に近い表示で使えます。</p></div></div>{installPrompt ? <button className="button primary" type="button" onClick={() => { void installPrompt.prompt(); setInstallPrompt(null) }}>インストールする</button> : <p className="hint">Android: ブラウザの「インストール」または「ホーム画面に追加」。iPhone: Safariの共有メニューから「ホーム画面に追加」。</p>}<p className="hint">リマインダーはアプリを開いているときに表示されます。</p></section>
       </>}
     </main>
