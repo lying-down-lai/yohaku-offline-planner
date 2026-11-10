@@ -21,3 +21,8 @@ it('infers two-week cycles but preserves differing times', () => {
   expect(groupRepeats([event(3), event(10, 11), event(17)]).removeIds).toHaveLength(1)
   expect(groupRepeats([event(3), event(17)]).updates[0].recurrence?.interval).toBe(2)
 })
+
+it('keeps the review flag when one grouped occurrence needs confirmation', () => {
+  const grouped = groupRepeats([event(3), { ...event(10), needsReview: true }])
+  expect(grouped.updates[0].needsReview).toBe(true)
+})

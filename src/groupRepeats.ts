@@ -7,7 +7,7 @@ export interface GroupedRepeats { updates: PlannerItem[]; removeIds: string[] }
 export function groupRepeats(items: PlannerItem[]): GroupedRepeats {
   const buckets = new Map<string, PlannerItem[]>()
   for (const item of items) {
-    if (item.recurrence || item.needsReview || (item.type === 'event' && (!item.startAt || !item.endAt))) continue
+    if (item.recurrence || (item.type === 'event' && (!item.startAt || !item.endAt))) continue
     const anchor = item.startAt ?? item.deadline
     if (!anchor) continue
     const date = parseISO(anchor)
@@ -33,7 +33,8 @@ export function groupRepeats(items: PlannerItem[]): GroupedRepeats {
       const dates = run.map(item => format(parseISO((item.startAt ?? item.deadline)!), 'yyyy-MM-dd'))
       const sourceText = run.map(item => item.sourceText).filter(Boolean).join('\n')
       if (sourceText.length > 10000) { run = []; return }
-      updates.push({ ...first, sourceText, recurrence: { frequency: 'weekly', interval: stepDays / 7,
+      updates.push({ ...first, sourceText, needsReview: run.some(item => item.needsReview),
+        recurrence: { frequency: 'weekly', interval: stepDays / 7,
         startsOn: dates[0], endsOn: dates[dates.length - 1] },
         occurrenceCompletions: run.filter(item => Boolean(item.completedAt)).map(item =>
           format(parseISO((item.startAt ?? item.deadline)!), 'yyyy-MM-dd')),
