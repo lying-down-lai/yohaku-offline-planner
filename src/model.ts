@@ -1,5 +1,17 @@
 export type ItemType = 'task' | 'event'
 
+export interface RecurrenceRule {
+  frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'
+  interval: number
+  startsOn: string
+  endsOn: string
+}
+
+export interface OccurrenceSlot {
+  startAt: string
+  endAt: string
+}
+
 export interface PlannerItem {
   id: string
   type: ItemType
@@ -15,6 +27,9 @@ export interface PlannerItem {
   sourceText: string
   completedAt: string | null
   reminderMinutes: number | null
+  recurrence: RecurrenceRule | null
+  occurrenceCompletions: string[]
+  occurrenceSlots: Record<string, OccurrenceSlot>
   createdAt: string
   updatedAt: string
 }
@@ -66,6 +81,9 @@ export function newItem(type: ItemType): PlannerItem {
     sourceText: '',
     completedAt: null,
     reminderMinutes: 10,
+    recurrence: null,
+    occurrenceCompletions: [],
+    occurrenceSlots: {},
     createdAt: now,
     updatedAt: now
   }

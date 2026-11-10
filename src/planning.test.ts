@@ -52,3 +52,14 @@ it('rejects a reversed task interval before it can be saved', () => {
     '2026-11-10T11:00:00+09:00', '2026-11-10T10:00:00+09:00'), [task], settings, now))
     .toThrow('終了は開始より後')
 })
+
+it('treats later occurrences of a repeated event as occupied in AI plans', () => {
+  const task = { ...newItem('task'), title: '課題' }
+  const event = { ...newItem('event'), title: '授業', startAt: '2026-11-10T10:00:00+09:00',
+    endAt: '2026-11-10T11:00:00+09:00',
+    recurrence: { frequency: 'daily' as const, interval: 1, startsOn: '2026-11-10', endsOn: '2026-11-12' } }
+  const prompt = makePlanningPrompt([task, event], settings, now, 'Asia/Tokyo')
+  expect(prompt).toContain(`${event.id}::2026-11-11`)
+  expect(() => parsePlanningProposal(proposal(task.id, '2026-11-11T10:00:00+09:00',
+    '2026-11-11T11:00:00+09:00'), [task, event], settings, now)).toThrow('重なって')
+})

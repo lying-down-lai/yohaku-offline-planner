@@ -1,5 +1,6 @@
-import { addDays, isWeekend, parseISO, startOfDay } from 'date-fns'
+import { addDays, format, isWeekend, parseISO, startOfDay } from 'date-fns'
 import type { PlannerItem, PlannerSettings } from './model'
+import { expandItems, type DisplayItem } from './recurrence'
 
 export interface ScheduleResult {
   scheduled: Array<{ id: string; startAt: string; endAt: string }>
@@ -66,6 +67,8 @@ export function scheduleTasks(
 
     for (let dayOffset = 0; dayOffset <= horizonDays && !chosen; dayOffset++) {
       const day = addDays(startOfDay(now), dayOffset)
+      const occurrenceDate = (task as DisplayItem).occurrenceDate
+      if (occurrenceDate && format(day, 'yyyy-MM-dd') !== occurrenceDate) continue
       if (!settings.includeWeekends && isWeekend(day)) continue
       const dayStart = localTimeOn(day, settings.workStart)
       const dayEnd = localTimeOn(day, settings.workEnd)
@@ -99,9 +102,11 @@ export function scheduleTasks(
 }
 
 export function conflictsWithExisting(candidate: PlannerItem, items: PlannerItem[]): boolean {
-  const span = validSpan(candidate)
-  return Boolean(span && items.some(item => item.id !== candidate.id && !item.completedAt && (() => {
-    const other = validSpan(item)
-    return other ? overlap(span, other) : false
-  })()))
+  if (!candidate.startAt || !candidate.endAt) return false
+  const from = candidate.recurrence ? parseISO(candidate.recurrence.startsOn) : parseISO(candidate.startAt)
+  const until = candidate.recurrence ? addDays(parseISO(candidate.recurrence.endsOn), 2) : addDays(parseISO(candidate.endAt), 1)
+  const candidates = expandItems([candidate], from, until).map(validSpan).filter((span): span is Span => span !== null)
+  const occupied = expandItems(items.filter(item => item.id !== candidate.id && !item.completedAt), from, until)
+    .filter(item => !item.completedAt).map(validSpan).filter((span): span is Span => span !== null)
+  return candidates.some(span => occupied.some(other => overlap(span, other)))
 }

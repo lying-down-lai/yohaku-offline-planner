@@ -1,13 +1,14 @@
 import { addDays, isSameDay, parseISO, startOfDay } from 'date-fns'
-import { compareItemTime, type PlannerItem } from './model'
+import { compareItemTime } from './model'
+import type { DisplayItem } from './recurrence'
 
 export interface FlowEntry {
-  item: PlannerItem
+  item: DisplayItem
   gapBeforeMinutes: number | null
 }
 
 /** A deadline alone does not occupy time; only scheduled spans define gaps. */
-export function getTodayFlow(items: PlannerItem[], now: Date): FlowEntry[] {
+export function getTodayFlow(items: DisplayItem[], now: Date): FlowEntry[] {
   const dayStart = startOfDay(now).getTime()
   const nextDay = addDays(startOfDay(now), 1).getTime()
   const visible = items.filter(item => {
@@ -15,7 +16,8 @@ export function getTodayFlow(items: PlannerItem[], now: Date): FlowEntry[] {
     if (item.startAt && item.endAt) {
       return Date.parse(item.startAt) < nextDay && Date.parse(item.endAt) > dayStart
     }
-    return Boolean((item.startAt && isSameDay(parseISO(item.startAt), now)) ||
+    return Boolean((item.occurrenceDate && isSameDay(parseISO(item.occurrenceDate), now)) ||
+      (item.startAt && isSameDay(parseISO(item.startAt), now)) ||
       (item.deadline && isSameDay(parseISO(item.deadline), now)))
   }).sort(compareItemTime)
 

@@ -45,6 +45,28 @@ describe('validated JSON transfer', () => {
     expect(restored.settings.sleepTargetMinutes).toBe(480)
   })
 
+  it('restores older items without recurrence fields', () => {
+    const item = { ...newItem('task'), title: '確認' }
+    const { recurrence: _recurrence, occurrenceCompletions: _completions, occurrenceSlots: _slots, ...olderItem } = item
+    const restored = parseBackup(JSON.stringify({
+      schemaVersion: 1, exportedAt: new Date().toISOString(), settings: defaultSettings, items: [olderItem]
+    }))
+    expect(restored.items[0].recurrence).toBeNull()
+    expect(restored.items[0].occurrenceCompletions).toEqual([])
+    expect(restored.items[0].occurrenceSlots).toEqual({})
+  })
+
+  it('imports an explicit repeating cycle without creating separate stored items', () => {
+    const [item] = parseAiImport(JSON.stringify({ schemaVersion: 1, items: [{
+      type: 'event', title: '授業', startAt: '2026-11-10T09:00:00+09:00', endAt: '2026-11-10T10:00:00+09:00',
+      deadline: null, estimatedMinutes: null, importance: null, fixed: true, needsReview: false,
+      sourceText: '毎週火曜の授業、12月まで',
+      recurrence: { frequency: 'weekly', interval: 1, startsOn: '2026-11-10', endsOn: '2026-12-29' }
+    }] }))
+    expect(item.recurrence?.frequency).toBe('weekly')
+    expect(item.occurrenceCompletions).toEqual([])
+  })
+
   it('rejects invalid event times before import', () => {
     expect(() => parseAiImport(JSON.stringify({ schemaVersion: 1, items: [{
       type: 'event', title: '不正な予定', startAt: '2026-11-09T12:00:00+09:00',

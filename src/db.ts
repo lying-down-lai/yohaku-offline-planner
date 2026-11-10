@@ -20,6 +20,15 @@ class PlannerDB extends Dexie {
     }).upgrade(tx => tx.table('settings').toCollection().modify(setting => {
       if (setting.sleepTargetMinutes == null) setting.sleepTargetMinutes = 480
     }))
+    this.version(3).stores({
+      items: 'id, type, startAt, deadline, completedAt',
+      settings: 'id',
+      reminders: 'key, itemId'
+    }).upgrade(tx => tx.table('items').toCollection().modify(item => {
+      if (item.recurrence === undefined) item.recurrence = null
+      if (!Array.isArray(item.occurrenceCompletions)) item.occurrenceCompletions = []
+      if (!item.occurrenceSlots) item.occurrenceSlots = {}
+    }))
   }
 }
 

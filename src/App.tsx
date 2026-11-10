@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { format, isSameDay, parseISO, startOfDay } from 'date-fns'
+import { addDays, format, isSameDay, parseISO, startOfDay, subDays } from 'date-fns'
 import { ja } from 'date-fns/locale'
 import { db, replaceAll } from './db'
 import { compareItemTime, defaultSettings, newItem, type PlannerItem, type PlannerSettings } from './model'
@@ -9,6 +9,7 @@ import { InAppDelivery, dueReminders, type ReminderNotice } from './reminders'
 import { createBackup, makeExtractionPrompt, makeImageExtractionPrompt, parseAiImport, parseBackup, withoutDuplicateEvents } from './transfer'
 import { formatGap, getTodayFlow } from './todayFlow'
 import { PlanningPanel } from './PlanningPanel'
+import { expandItems, expandOccurrence, recurrenceDates, recurrenceLabel, validRecurrence, type DisplayItem } from './recurrence'
 
 type Tab = 'today' | 'tasks' | 'calendar' | 'tools'
 type InstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> }
@@ -97,8 +98,27 @@ function ItemEditor({ item, items, onClose, onSaved }: {
     if (draft.type === 'task' && draft.deadline && draft.endAt && Date.parse(draft.endAt) > Date.parse(draft.deadline)) {
       setError('配置した時間が期限を超えています'); return
     }
+    if (draft.recurrence) {
+      if (!validRecurrence(draft.recurrence)) {
+        setError('繰り返しの開始日・終了日・間隔を確認してください'); return
+      }
+      const first = draft.recurrence.startsOn
+      if (draft.type === 'event' && (!draft.startAt || format(parseISO(draft.startAt), 'yyyy-MM-dd') !== first)) {
+        setError('繰り返しの開始日は最初の予定日と一致させてください'); return
+      }
+      if (draft.type === 'task' && [draft.startAt, draft.deadline].some(value =>
+        value && format(parseISO(value), 'yyyy-MM-dd') !== first)) {
+        setError('最初の配置・期限は繰り返し開始日に設定してください'); return
+      }
+    }
+    const ruleChanged = JSON.stringify(item.recurrence) !== JSON.stringify(draft.recurrence)
+    if (item.recurrence && ruleChanged &&
+      (item.occurrenceCompletions.length > 0 || Object.keys(item.occurrenceSlots).length > 0) &&
+      !window.confirm('繰り返し設定を変更すると、各回の完了・自動配置の記録が消えます。続けますか？')) return
     const saved: PlannerItem = {
       ...draft, title, notes: draft.notes.trim(), fixed: draft.type === 'event',
+      occurrenceCompletions: ruleChanged ? [] : draft.occurrenceCompletions,
+      occurrenceSlots: ruleChanged ? {} : draft.occurrenceSlots,
       updatedAt: new Date().toISOString()
     }
     if (conflictsWithExisting(saved, items) && !window.confirm('ほかの予定・タスクと時間が重なります。保存しますか？')) return
@@ -132,9 +152,21 @@ function ItemEditor({ item, items, onClose, onSaved }: {
           <label>期限<input type="datetime-local" value={dateTimeLocal(draft.deadline)} onChange={event => set('deadline', toIso(event.target.value))} /></label>
         </> : null}
         <div className="form-row">
-          <label>開始{draft.type === 'task' ? '（任意）' : ''}<input type="datetime-local" required={draft.type === 'event'} value={dateTimeLocal(draft.startAt)} onChange={event => set('startAt', toIso(event.target.value))} /></label>
+          <label>開始{draft.type === 'task' ? '（任意）' : ''}<input type="datetime-local" required={draft.type === 'event'} value={dateTimeLocal(draft.startAt)} onChange={event => { const value = toIso(event.target.value); setDraft(current => ({ ...current, startAt: value, recurrence: current.type === 'event' && current.recurrence ? { ...current.recurrence, startsOn: value ? format(parseISO(value), 'yyyy-MM-dd') : '' } : current.recurrence })) }} /></label>
           <label>終了{draft.type === 'task' ? '（任意）' : ''}<input type="datetime-local" required={draft.type === 'event'} value={dateTimeLocal(draft.endAt)} onChange={event => set('endAt', toIso(event.target.value))} /></label>
         </div>
+        <label className="check-label"><input type="checkbox" checked={Boolean(draft.recurrence)} onChange={event => set('recurrence', event.target.checked ? { frequency: 'weekly', interval: 1, startsOn: draft.startAt || draft.deadline ? format(parseISO(draft.startAt ?? draft.deadline!), 'yyyy-MM-dd') : '', endsOn: '' } : null)} />繰り返す</label>
+        {draft.recurrence && <div className="recurrence-fields">
+          <div className="form-row">
+            <label>周期<select value={draft.recurrence.frequency} onChange={event => set('recurrence', { ...draft.recurrence!, frequency: event.target.value as NonNullable<PlannerItem['recurrence']>['frequency'] })}><option value="daily">日</option><option value="weekly">週</option><option value="monthly">月</option><option value="yearly">年</option></select></label>
+            <label>間隔<input type="number" min="1" max="365" required value={draft.recurrence.interval} onChange={event => set('recurrence', { ...draft.recurrence!, interval: Number(event.target.value) })} /></label>
+          </div>
+          <div className="form-row">
+            {draft.type === 'task' && <label>最初の日<input type="date" required value={draft.recurrence.startsOn} onChange={event => set('recurrence', { ...draft.recurrence!, startsOn: event.target.value })} /></label>}
+            <label>終了日（この日を含む）<input type="date" required min={draft.recurrence.startsOn || undefined} value={draft.recurrence.endsOn} onChange={event => set('recurrence', { ...draft.recurrence!, endsOn: event.target.value })} /></label>
+          </div>
+          <p className="hint">毎月31日・毎年2月29日など、存在しない日はその月・年の最終日に表示します。編集・削除は繰り返し全体に反映されます。時刻のないタスクにはリマインダーが出ません。</p>
+        </div>}
         {draft.type === 'task' && draft.startAt && <button type="button" className="text-button" onClick={() => setDraft(current => ({ ...current, startAt: null, endAt: null }))}>配置を解除する</button>}
         <label>リマインダー<select value={draft.reminderMinutes ?? 'off'} onChange={event => set('reminderMinutes', event.target.value === 'off' ? null : Number(event.target.value))}>
           <option value="off">なし</option><option value="0">時間になったら</option><option value="10">10分前</option><option value="30">30分前</option><option value="60">1時間前</option><option value="1440">1日前</option>
@@ -147,27 +179,30 @@ function ItemEditor({ item, items, onClose, onSaved }: {
   </div>
 }
 
-function ItemCard({ item, onEdit, onComplete, onReopen, onDelete }: {
-  item: PlannerItem
-  onEdit: (item: PlannerItem) => void
-  onComplete: (item: PlannerItem) => void
-  onReopen: (item: PlannerItem) => void
-  onDelete: (item: PlannerItem) => void
+function ItemCard({ item, onEdit, onComplete, onReopen, onUnplace, onDelete }: {
+  item: DisplayItem
+  onEdit: (item: DisplayItem) => void
+  onComplete: (item: DisplayItem) => void
+  onReopen: (item: DisplayItem) => void
+  onUnplace: (item: DisplayItem) => void
+  onDelete: (item: DisplayItem) => void
 }) {
-  const time = item.startAt ? prettyDate(item.startAt) : item.deadline ? `期限 ${prettyDate(item.deadline)}` : '日時未設定'
+  const time = item.startAt ? prettyDate(item.startAt) : item.deadline ? `期限 ${prettyDate(item.deadline)}` : item.occurrenceDate ? `${format(parseISO(item.occurrenceDate), 'M月d日 (EEE)', { locale: ja })} · 時間未設定` : item.recurrence ? '期間終了' : '日時未設定'
   return <article className={`item-card ${item.completedAt ? 'is-done' : ''}`}>
     <div className={`item-marker ${item.type}`}>{item.type === 'task' ? '✓' : '●'}</div>
     <div className="item-body">
       <div className="item-topline"><span className="item-kind">{item.type === 'task' ? 'タスク' : '予定'}</span>{item.needsReview && <span className="review-tag">要確認</span>}{item.completedAt && <span className="done-tag">完了</span>}</div>
       <h3>{item.title}</h3>
       <p className="item-time">{time}{item.startAt && item.endAt ? ` – ${prettyDate(item.endAt, !isSameDay(parseISO(item.startAt), parseISO(item.endAt)))}` : ''}</p>
+      {item.recurrence && <p className="recurrence-tag">↻ {recurrenceLabel(item.recurrence)}</p>}
       {item.notes && <p className="item-notes">{item.notes}</p>}
       {item.type === 'task' && <p className="item-meta">{item.estimatedMinutes ?? '?'}分 · 重要度 {item.importance ?? '未設定'}</p>}
       <div className="item-actions">
-        <button type="button" onClick={() => onEdit(item)}>編集</button>
-        {item.type === 'task' && !item.completedAt && <button type="button" onClick={() => onComplete(item)}>完了にする</button>}
-        {item.type === 'task' && item.completedAt && <button type="button" onClick={() => onReopen(item)}>未完了に戻す</button>}
-        <button type="button" className="danger-link" onClick={() => onDelete(item)}>削除</button>
+        <button type="button" onClick={() => onEdit(item)}>{item.recurrence ? '繰り返しを編集' : '編集'}</button>
+        {item.type === 'task' && (!item.recurrence || item.occurrenceDate) && !item.completedAt && <button type="button" onClick={() => onComplete(item)}>{item.recurrence ? 'この回を完了' : '完了にする'}</button>}
+        {item.type === 'task' && (!item.recurrence || item.occurrenceDate) && item.completedAt && <button type="button" onClick={() => onReopen(item)}>未完了に戻す</button>}
+        {item.type === 'task' && item.occurrenceDate && item.occurrenceSlots[item.occurrenceDate] && <button type="button" onClick={() => onUnplace(item)}>この回の配置を解除</button>}
+        <button type="button" className="danger-link" onClick={() => onDelete(item)}>{item.recurrence ? '繰り返しを削除' : '削除'}</button>
       </div>
     </div>
   </article>
@@ -216,7 +251,8 @@ export default function App() {
       if (running || document.visibilityState !== 'visible') return
       running = true
       try {
-        for (const notice of dueReminders(items, new Date())) {
+        const now = new Date()
+        for (const notice of dueReminders(expandItems(items, startOfDay(subDays(now, 1)), addDays(startOfDay(now), 2)), now)) {
           if (await db.reminders.get(notice.key)) continue
           try {
             await db.reminders.add({ key: notice.key, itemId: notice.itemId, firedAt: new Date().toISOString() })
@@ -233,14 +269,32 @@ export default function App() {
   }, [items])
 
   const activeTasks = useMemo(() => items.filter(item => item.type === 'task' && !item.completedAt), [items])
-  const completedTasks = useMemo(() => items.filter(item => item.type === 'task' && item.completedAt), [items])
+  const completedTasks = useMemo(() => items.filter(item => item.type === 'task' && item.completedAt && !item.recurrence), [items])
   const reviewEvents = useMemo(() => items.filter(item => item.type === 'event' && item.needsReview), [items])
   const reviewCount = items.filter(item => item.needsReview).length
-  const todayFlow = getTodayFlow(items, new Date())
-  const calendarItems = items.filter(item => item.startAt && format(parseISO(item.startAt), 'yyyy-MM-dd') === selectedDate)
-    .sort(compareItemTime)
-  const unscheduledCount = activeTasks.filter(item => !item.startAt && !item.needsReview).length
-  const schedulableCount = activeTasks.filter(item => !item.startAt && !item.needsReview && item.estimatedMinutes !== null).length
+  const today = new Date()
+  const todayStart = startOfDay(today)
+  const todayKey = format(today, 'yyyy-MM-dd')
+  const todayFlow = getTodayFlow(expandItems(items, todayStart, addDays(todayStart, 1)), today)
+  const selectedDay = parseISO(selectedDate)
+  const selectedDayEnd = addDays(selectedDay, 1)
+  const calendarItems = expandItems(items, selectedDay, selectedDayEnd).filter(item => {
+    if (item.startAt && item.endAt) {
+      return Date.parse(item.startAt) < selectedDayEnd.getTime() && Date.parse(item.endAt) > selectedDay.getTime()
+    }
+    return item.occurrenceDate === selectedDate || Boolean(item.startAt &&
+      format(parseISO(item.startAt), 'yyyy-MM-dd') === selectedDate)
+  }).sort(compareItemTime)
+  const taskListItems: DisplayItem[] = activeTasks.map(item => {
+    if (!item.recurrence) return item
+    const nextDate = recurrenceDates(item.recurrence, todayStart, addDays(parseISO(item.recurrence.endsOn), 1))[0]
+    return nextDate ? expandOccurrence(item, nextDate) : item
+  })
+  const unscheduledCount = activeTasks.filter(item => !item.startAt && !item.needsReview &&
+    (!item.recurrence || item.recurrence.endsOn >= todayKey)).length
+  const schedulableCount = activeTasks.filter(item => !item.startAt && !item.needsReview && item.estimatedMinutes !== null &&
+    (!item.recurrence || (item.recurrence.endsOn >= todayKey &&
+      item.recurrence.startsOn <= format(addDays(todayStart, 30), 'yyyy-MM-dd')))).length
   const todayCount = todayFlow.length
 
   function saved(message: string) { setEditing(null); setToast(message) }
@@ -256,35 +310,81 @@ export default function App() {
     } catch (error) { setToast(describeError(error)) }
   }
 
-  async function complete(item: PlannerItem) {
-    if (!window.confirm(`「${item.title}」を完了にしますか？`)) return
-    await db.items.update(item.id, { completedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+  async function complete(item: DisplayItem) {
+    if (!window.confirm(`「${item.title}」${item.occurrenceDate ? `（${item.occurrenceDate}の回）` : ''}を完了にしますか？`)) return
+    const updatedAt = new Date().toISOString()
+    if (item.seriesId && item.occurrenceDate) {
+      await db.transaction('rw', db.items, async () => {
+        const current = await db.items.get(item.seriesId!)
+        if (!current?.recurrence) return
+        await db.items.update(current.id, { occurrenceCompletions: [...new Set([...current.occurrenceCompletions, item.occurrenceDate!])], updatedAt })
+      })
+    } else await db.items.update(item.id, { completedAt: updatedAt, updatedAt })
     setToast('完了として記録しました')
   }
 
-  async function reopen(item: PlannerItem) {
-    await db.items.update(item.id, { completedAt: null, updatedAt: new Date().toISOString() })
+  async function reopen(item: DisplayItem) {
+    const updatedAt = new Date().toISOString()
+    if (item.seriesId && item.occurrenceDate) {
+      await db.transaction('rw', db.items, async () => {
+        const current = await db.items.get(item.seriesId!)
+        if (!current?.recurrence) return
+        await db.items.update(current.id, { occurrenceCompletions: current.occurrenceCompletions.filter(date => date !== item.occurrenceDate), updatedAt })
+      })
+    } else await db.items.update(item.id, { completedAt: null, updatedAt })
     setToast('未完了に戻しました')
   }
 
-  async function remove(item: PlannerItem) {
-    if (!window.confirm(`「${item.title}」を削除しますか？`)) return
+  async function unplace(item: DisplayItem) {
+    if (!item.seriesId || !item.occurrenceDate) return
+    await db.transaction('rw', db.items, async () => {
+      const current = await db.items.get(item.seriesId!)
+      if (!current?.recurrence) return
+      const occurrenceSlots = { ...current.occurrenceSlots }
+      delete occurrenceSlots[item.occurrenceDate!]
+      await db.items.update(current.id, { occurrenceSlots, updatedAt: new Date().toISOString() })
+    })
+    setToast('この回の配置を解除しました')
+  }
+
+  async function remove(item: DisplayItem) {
+    if (!window.confirm(`「${item.title}」${item.recurrence ? 'の繰り返し全体' : ''}を削除しますか？`)) return
+    const id = item.seriesId ?? item.id
     await db.transaction('rw', db.items, db.reminders, async () => {
-      await db.items.delete(item.id)
-      await db.reminders.where('itemId').equals(item.id).delete()
+      await db.items.delete(id)
+      await db.reminders.where('itemId').equals(id).delete()
     })
     setToast('削除しました')
   }
 
   async function autoSchedule() {
-    const result = scheduleTasks(items, new Date(), settings)
-    if (result.scheduled.length) {
-      const now = new Date().toISOString()
-      await db.transaction('rw', db.items, async () => {
-        for (const entry of result.scheduled) await db.items.update(entry.id, { startAt: entry.startAt, endAt: entry.endAt, updatedAt: now })
+    const nowDate = new Date()
+    let scheduled = 0
+    let unscheduled = 0
+    try {
+      await db.transaction('rw', db.items, db.settings, async () => {
+        const latestItems = await db.items.toArray()
+        const latestSettings = await db.settings.get('main') ?? settings
+        const expanded = expandItems(latestItems, startOfDay(nowDate), addDays(startOfDay(nowDate), 31))
+        const byOccurrenceId = new Map(expanded.map(item => [item.id, item]))
+        const result = scheduleTasks(expanded, nowDate, latestSettings)
+        scheduled = result.scheduled.length
+        unscheduled = result.unscheduled.length
+        const now = new Date().toISOString()
+        const changedSlots = new Map<string, PlannerItem['occurrenceSlots']>()
+        for (const entry of result.scheduled) {
+          const occurrence = byOccurrenceId.get(entry.id)
+          if (occurrence?.seriesId && occurrence.occurrenceDate) {
+            const base = latestItems.find(item => item.id === occurrence.seriesId)!
+            const slots = changedSlots.get(base.id) ?? { ...base.occurrenceSlots }
+            slots[occurrence.occurrenceDate] = { startAt: entry.startAt, endAt: entry.endAt }
+            changedSlots.set(base.id, slots)
+          } else await db.items.update(entry.id, { startAt: entry.startAt, endAt: entry.endAt, updatedAt: now })
+        }
+        for (const [id, occurrenceSlots] of changedSlots) await db.items.update(id, { occurrenceSlots, updatedAt: now })
       })
-    }
-    setToast(`${result.scheduled.length}件を配置しました${result.unscheduled.length ? `。${result.unscheduled.length}件は未配置です` : ''}`)
+      setToast(`${scheduled}件を配置しました${unscheduled ? `。${unscheduled}件は未配置です` : ''}`)
+    } catch (error) { setToast(`配置できませんでした: ${describeError(error)}`) }
   }
 
   async function updateSettings(next: PlannerSettings) {
@@ -338,7 +438,7 @@ export default function App() {
     catch { setToast('コピーできませんでした。ブラウザの権限を確認してください') }
   }
 
-  const cardHandlers = { onEdit: setEditing, onComplete: complete, onReopen: reopen, onDelete: remove }
+  const cardHandlers = { onEdit: (item: DisplayItem) => setEditing(items.find(base => base.id === (item.seriesId ?? item.id)) ?? null), onComplete: complete, onReopen: reopen, onUnplace: unplace, onDelete: remove }
 
   return <div className="app-shell">
     <header className="topbar">
@@ -365,7 +465,7 @@ export default function App() {
         <div className="toolbar"><button className="button primary" type="button" onClick={() => setEditing(newItem('task'))}>＋ タスクを追加</button><button className="button secondary" type="button" onClick={() => void autoSchedule()} disabled={!schedulableCount}>空き時間に配置</button></div>
         {unscheduledCount > 0 && !schedulableCount && <p className="hint">所要時間が未設定のタスクは、編集するかAIの計画提案で見積もれます。</p>}
         <div className="section-heading compact"><h2>進行中 <span className="count">{activeTasks.length}</span></h2></div>
-        {activeTasks.length ? <div className="cards">{activeTasks.slice().sort((a, b) => Number(b.needsReview) - Number(a.needsReview) || (a.deadline ?? '9999').localeCompare(b.deadline ?? '9999')).map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div> : <div className="empty-state"><span className="empty-illustration">✓</span><h3>進行中のタスクはありません</h3><p>新しいタスクを追加しましょう。</p></div>}
+        {taskListItems.length ? <div className="cards">{taskListItems.slice().sort((a, b) => Number(b.needsReview) - Number(a.needsReview) || (a.deadline ?? a.occurrenceDate ?? '9999').localeCompare(b.deadline ?? b.occurrenceDate ?? '9999')).map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div> : <div className="empty-state"><span className="empty-illustration">✓</span><h3>進行中のタスクはありません</h3><p>新しいタスクを追加しましょう。</p></div>}
         {reviewEvents.length > 0 && <><div className="section-heading compact"><h2>確認が必要な予定 <span className="count">{reviewEvents.length}</span></h2></div><div className="cards">{reviewEvents.map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div></>}
         {completedTasks.length > 0 && <details className="completed-section"><summary>完了したタスク <span>{completedTasks.length}</span></summary><div className="cards">{completedTasks.map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div></details>}
       </>}

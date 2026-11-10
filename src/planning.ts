@@ -1,6 +1,7 @@
 import { addDays, format, isSameDay, isWeekend, parseISO, startOfDay } from 'date-fns'
 import { z } from 'zod'
 import type { PlannerItem, PlannerSettings } from './model'
+import { expandItems } from './recurrence'
 
 const iso = z.string().refine(value =>
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
@@ -31,7 +32,11 @@ export function makePlanningPrompt(
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 ): string {
   const horizonEnd = addDays(startOfDay(now), 7)
-  const relevant = items.filter(item => {
+  const stateItems = [
+    ...items.filter(item => item.type === 'task'),
+    ...expandItems(items.filter(item => item.type === 'event'), startOfDay(now), horizonEnd)
+  ]
+  const relevant = stateItems.filter(item => {
     if (item.type === 'task') return !item.completedAt
     if (!item.startAt || !item.endAt) return item.needsReview
     return Date.parse(item.endAt) > now.getTime() && Date.parse(item.startAt) < addDays(horizonEnd, 1).getTime()
@@ -46,7 +51,8 @@ export function makePlanningPrompt(
     estimatedMinutes: item.estimatedMinutes,
     importance: item.importance,
     fixed: item.fixed,
-    needsReview: item.needsReview
+    needsReview: item.needsReview,
+    recurrence: item.recurrence
   }))
 
   return [
@@ -62,6 +68,7 @@ export function makePlanningPrompt(
     'TASK:',
     '1. Suggest importance (1 low to 5 high) for each unfinished task. Earlier deadlines take precedence; importance is secondary. Preserve a known estimatedMinutes value. If missing, estimate only when there is enough evidence; otherwise keep null.',
     '2. Propose one continuous work slot for each task that fits its estimatedMinutes. Use the work window, avoid weekends when excluded, and finish by the deadline. Preserve all existing scheduled slots. Leave infeasible or uncertain tasks unplaced and explain them in warnings. Prefer 60-120 minute uninterrupted sessions, but never split a task in this schema.',
+    'Recurring tasks are stored as one series. Suggest their importance and duration, but return null startAt/endAt for them; the app schedules individual occurrences. Treat every recurring event occurrence in CURRENT_STATE as occupied.',
     '3. Propose up to one sleep block per night in the next seven nights, aiming for SLEEP_TARGET with flexible timing. Do not duplicate existing sleep events. Sleep blocks are provisional and will require user review.',
     '4. Never move or delete a fixed event, change a completed task, overlap any existing or proposed occupied time, or claim that a task is completed. Do not invent missing deadlines or firm commitments.',
     '5. Return every proposed datetime as YYYY-MM-DDTHH:mm:ss±HH:mm with the correct UTC offset for that date and timezone. Include seconds. No date-only or offset-free values. All proposed starts must be in the future.',
@@ -98,7 +105,8 @@ export function parsePlanningProposal(
   const sleepEndLimit = addDays(startOfDay(now), 8).getTime()
   const byId = new Map(items.map(item => [item.id, item]))
   const seen = new Set<string>()
-  const busy = items.filter(item => !item.completedAt).map(interval).filter((span): span is { start: number; end: number } => span !== null)
+  const busy = expandItems(items, startOfDay(now), addDays(startOfDay(now), 8))
+    .filter(item => !item.completedAt).map(interval).filter((span): span is { start: number; end: number } => span !== null)
   const proposed: Array<{ start: number; end: number }> = []
 
   for (const update of plan.taskUpdates) {
@@ -106,6 +114,7 @@ export function parsePlanningProposal(
     seen.add(update.id)
     const task = byId.get(update.id)
     if (!task || task.type !== 'task' || task.completedAt) throw new Error(`更新できないタスクIDです: ${update.id}`)
+    if (task.recurrence && update.startAt) throw new Error(`「${task.title}」の各回の配置はアプリの自動配置で行ってください`)
     if (task.estimatedMinutes !== null && update.estimatedMinutes !== task.estimatedMinutes) {
       throw new Error(`「${task.title}」の既存の所要時間は変更できません`)
     }
