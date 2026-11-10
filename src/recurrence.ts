@@ -70,6 +70,7 @@ export function expandOccurrence(item: PlannerItem, dateKey: string): DisplayIte
   const endOffset = templateStart && templateEnd
     ? differenceInCalendarDays(parseISO(templateEnd), parseISO(templateStart)) : 0
   const slot = item.occurrenceSlots?.[dateKey]
+  const attributes = item.occurrenceAttributes?.[dateKey]
   const startAt = slot?.startAt ?? (templateStart ? moveLocalTime(templateStart, dateKey) : null)
   const endAt = slot?.endAt ?? (templateEnd ? moveLocalTime(templateEnd, dateKey, endOffset) : null)
   const deadlineOffset = item.deadline
@@ -83,6 +84,8 @@ export function expandOccurrence(item: PlannerItem, dateKey: string): DisplayIte
     startAt,
     endAt,
     deadline,
+    estimatedMinutes: attributes ? attributes.estimatedMinutes : item.estimatedMinutes,
+    importance: attributes ? attributes.importance : item.importance,
     completedAt: item.occurrenceCompletions?.includes(dateKey) ? item.updatedAt : null
   }
 }

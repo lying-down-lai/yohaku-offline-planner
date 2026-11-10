@@ -12,6 +12,11 @@ export interface OccurrenceSlot {
   endAt: string
 }
 
+export interface OccurrenceAttributes {
+  estimatedMinutes: number | null
+  importance: number | null
+}
+
 export interface TaskAssessment {
   importance: number | null
   estimatedMinutes: number | null
@@ -39,6 +44,7 @@ export interface PlannerItem {
   recurrence: RecurrenceRule | null
   occurrenceCompletions: string[]
   occurrenceSlots: Record<string, OccurrenceSlot>
+  occurrenceAttributes: Record<string, OccurrenceAttributes>
   aiAssessment: TaskAssessment | null
   createdAt: string
   updatedAt: string
@@ -98,6 +104,7 @@ export function newItem(type: ItemType): PlannerItem {
     recurrence: null,
     occurrenceCompletions: [],
     occurrenceSlots: {},
+    occurrenceAttributes: {},
     aiAssessment: null,
     createdAt: now,
     updatedAt: now

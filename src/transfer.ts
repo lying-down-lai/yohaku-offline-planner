@@ -61,6 +61,7 @@ const storedItemSchema = aiItemSchema.safeExtend({
   updatedAt: iso,
   occurrenceCompletions: z.array(dateKey).max(10000).default([]),
   occurrenceSlots: z.record(dateKey, slotSchema).default({}),
+  occurrenceAttributes: z.record(dateKey, z.object({ estimatedMinutes: minutes, importance }).strict()).default({}),
   aiAssessment: z.object({ importance, estimatedMinutes: minutes,
     ambiguous: z.boolean(), dependencies: z.array(z.string().min(1)).max(20),
     sourceSignature: z.string().max(30000), assessedAt: iso }).strict().nullable().default(null)
@@ -102,6 +103,7 @@ export function parseAiImport(text: string): PlannerItem[] {
     reminderMinutes: 10,
     occurrenceCompletions: [],
     occurrenceSlots: {},
+    occurrenceAttributes: {},
     aiAssessment: null,
     createdAt: now,
     updatedAt: now

@@ -37,6 +37,19 @@ function prettyDate(value: string | null, withDay = true): string {
   return format(parseISO(value), withDay ? 'M月d日 (EEE) HH:mm' : 'HH:mm', { locale: ja })
 }
 
+function chronologicalTime(item: DisplayItem): number {
+  const value = item.startAt ?? item.deadline ?? item.occurrenceDate
+  return value ? parseISO(value).getTime() : Infinity
+}
+
+function isPastEvent(item: DisplayItem, now: Date): boolean {
+  if (item.type !== 'event') return false
+  const dates = item.recurrence && !item.seriesId
+    ? recurrenceDates(item.recurrence, parseISO(item.recurrence.startsOn), addDays(parseISO(item.recurrence.endsOn), 1)) : []
+  const last = dates.length ? expandOccurrence(item, dates[dates.length - 1]) : item
+  return Boolean(last.endAt && Date.parse(last.endAt) <= now.getTime())
+}
+
 function describeError(error: unknown): string {
   if (error && typeof error === 'object' && 'issues' in error && Array.isArray(error.issues)) {
     return String(error.issues[0]?.message ?? '形式が正しくありません')
@@ -114,12 +127,14 @@ function ItemEditor({ item, items, onClose, onSaved }: {
     }
     const ruleChanged = JSON.stringify(item.recurrence) !== JSON.stringify(draft.recurrence)
     if (item.recurrence && ruleChanged &&
-      (item.occurrenceCompletions.length > 0 || Object.keys(item.occurrenceSlots).length > 0) &&
+      (item.occurrenceCompletions.length > 0 || Object.keys(item.occurrenceSlots).length > 0 ||
+        Object.keys(item.occurrenceAttributes).length > 0) &&
       !window.confirm('繰り返し設定を変更すると、各回の完了・自動配置の記録が消えます。続けますか？')) return
     const saved: PlannerItem = {
       ...draft, title, notes: draft.notes.trim(), fixed: draft.type === 'event',
       occurrenceCompletions: ruleChanged ? [] : draft.occurrenceCompletions,
       occurrenceSlots: ruleChanged ? {} : draft.occurrenceSlots,
+      occurrenceAttributes: ruleChanged ? {} : draft.occurrenceAttributes,
       updatedAt: new Date().toISOString()
     }
     if (conflictsWithExisting(saved, items) && !window.confirm('ほかの予定・タスクと時間が重なります。保存しますか？')) return
@@ -192,7 +207,7 @@ function ItemCard({ item, onEdit, onComplete, onReopen, onUnplace, onDelete }: {
   return <article className={`item-card ${item.completedAt ? 'is-done' : ''}`}>
     <div className={`item-marker ${item.type}`}>{item.type === 'task' ? '✓' : '●'}</div>
     <div className="item-body">
-      <div className="item-topline"><span className="item-kind">{item.type === 'task' ? 'タスク' : '予定'}</span>{item.needsReview && <span className="review-tag">要確認</span>}{item.completedAt && <span className="done-tag">完了</span>}</div>
+      <div className="item-topline"><span className="item-kind">{item.type === 'task' ? 'タスク' : '予定'}</span>{item.needsReview && !isPastEvent(item, new Date()) && <span className="review-tag">要確認</span>}{item.completedAt && <span className="done-tag">完了</span>}</div>
       <h3>{item.title}</h3>
       <p className="item-time">{time}{item.startAt && item.endAt ? ` – ${prettyDate(item.endAt, !isSameDay(parseISO(item.startAt), parseISO(item.endAt)))}` : ''}</p>
       {item.recurrence && <p className="recurrence-tag">↻ {recurrenceLabel(item.recurrence)}</p>}
@@ -284,11 +299,17 @@ export default function App() {
 
   const activeTasks = useMemo(() => items.filter(item => item.type === 'task' && !item.completedAt), [items])
   const completedTasks = useMemo(() => items.filter(item => item.type === 'task' && item.completedAt && !item.recurrence), [items])
-  const reviewEvents = useMemo(() => items.filter(item => item.type === 'event' && item.needsReview), [items])
-  const reviewCount = items.filter(item => item.needsReview).length
   const today = new Date()
   const todayStart = startOfDay(today)
   const todayKey = format(today, 'yyyy-MM-dd')
+  const reviewEvents: DisplayItem[] = items.filter(item => item.type === 'event' && item.needsReview && !isPastEvent(item, today))
+    .map(item => {
+      if (!item.recurrence) return item
+      const next = recurrenceDates(item.recurrence, todayStart, addDays(parseISO(item.recurrence.endsOn), 1))
+        .map(date => expandOccurrence(item, date)).find(entry => !isPastEvent(entry, today))
+      return next ?? item
+    }).sort((a, b) => chronologicalTime(a) - chronologicalTime(b))
+  const reviewCount = items.filter(item => item.type === 'task' && item.needsReview).length + reviewEvents.length
   const todayFlow = getTodayFlow(expandItems(items, todayStart, addDays(todayStart, 1)), today)
   const selectedDay = parseISO(selectedDate)
   const selectedDayEnd = addDays(selectedDay, 1)
@@ -449,7 +470,7 @@ export default function App() {
         <div className="toolbar"><button className="button primary" type="button" onClick={() => setEditing(newItem('task'))}>＋ タスクを追加</button><button className="button secondary" type="button" onClick={() => setTab('tools')}>仮の計画を確認</button></div>
         {unscheduledCount > 0 && !schedulableCount && <p className="hint">所要時間が未設定のタスクは、編集するかAIの計画提案で見積もれます。</p>}
         <div className="section-heading compact"><h2>進行中 <span className="count">{activeTasks.length}</span></h2></div>
-        {taskListItems.length ? <div className="cards">{taskListItems.slice().sort((a, b) => Number(b.needsReview) - Number(a.needsReview) || (a.deadline ?? a.occurrenceDate ?? '9999').localeCompare(b.deadline ?? b.occurrenceDate ?? '9999')).map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div> : <div className="empty-state"><span className="empty-illustration">✓</span><h3>進行中のタスクはありません</h3><p>新しいタスクを追加しましょう。</p></div>}
+        {taskListItems.length ? <div className="cards">{taskListItems.slice().sort((a, b) => chronologicalTime(a) - chronologicalTime(b) || a.createdAt.localeCompare(b.createdAt)).map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div> : <div className="empty-state"><span className="empty-illustration">✓</span><h3>進行中のタスクはありません</h3><p>新しいタスクを追加しましょう。</p></div>}
         {reviewEvents.length > 0 && <><div className="section-heading compact"><h2>確認が必要な予定 <span className="count">{reviewEvents.length}</span></h2></div><div className="cards">{reviewEvents.map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div></>}
         {completedTasks.length > 0 && <details className="completed-section"><summary>完了したタスク <span>{completedTasks.length}</span></summary><div className="cards">{completedTasks.map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div></details>}
       </>}

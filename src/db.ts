@@ -38,6 +38,11 @@ class PlannerDB extends Dexie {
         if (!setting.priorityTieBreaker) setting.priorityTieBreaker = 'older'
       })
     })
+    this.version(5).stores({
+      items: 'id, type, startAt, deadline, completedAt', settings: 'id', reminders: 'key, itemId'
+    }).upgrade(tx => tx.table('items').toCollection().modify(item => {
+      if (!item.occurrenceAttributes) item.occurrenceAttributes = {}
+    }))
   }
 }
 

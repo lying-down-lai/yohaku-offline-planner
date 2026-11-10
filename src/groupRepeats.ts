@@ -3,7 +3,7 @@ import type { PlannerItem } from './model'
 
 export interface GroupedRepeats { updates: PlannerItem[]; removeIds: string[] }
 
-/** Consolidate only exact weekly runs; differing times or metadata remain independent. */
+/** Match recurring starts; preserve per-occurrence duration and task attributes. */
 export function groupRepeats(items: PlannerItem[]): GroupedRepeats {
   const buckets = new Map<string, PlannerItem[]>()
   for (const item of items) {
@@ -15,8 +15,8 @@ export function groupRepeats(items: PlannerItem[]): GroupedRepeats {
     const span = item.startAt && item.endAt ? Date.parse(item.endAt) - Date.parse(item.startAt) : null
     if (span !== null && span <= 0) continue
     const key = JSON.stringify([item.type, item.title.normalize('NFKC').trim().toLocaleLowerCase(),
-      date.getDay(), format(date, 'HH:mm:ss'), span, item.notes, item.estimatedMinutes,
-      item.importance, item.fixed, item.reminderMinutes,
+      date.getDay(), format(date, 'HH:mm:ss'), item.notes,
+      item.fixed, item.reminderMinutes,
       item.deadline ? [differenceInCalendarDays(parseISO(item.deadline), date), format(parseISO(item.deadline), 'HH:mm:ss')] : null,
       item.type === 'task' && Boolean(item.startAt)])
     buckets.set(key, [...(buckets.get(key) ?? []), item])
@@ -33,7 +33,22 @@ export function groupRepeats(items: PlannerItem[]): GroupedRepeats {
       const dates = run.map(item => format(parseISO((item.startAt ?? item.deadline)!), 'yyyy-MM-dd'))
       const sourceText = run.map(item => item.sourceText).filter(Boolean).join('\n')
       if (sourceText.length > 10000) { run = []; return }
+      const occurrenceAttributes = { ...first.occurrenceAttributes }
+      const occurrenceSlots = { ...first.occurrenceSlots }
+      const endShape = (item: PlannerItem) => item.startAt && item.endAt
+        ? `${differenceInCalendarDays(parseISO(item.endAt), parseISO(item.startAt))}:${format(parseISO(item.endAt), 'HH:mm:ss')}` : null
+      for (let index = 1; index < run.length; index++) {
+        const item = run[index]
+        const date = dates[index]
+        if (item.estimatedMinutes !== first.estimatedMinutes || item.importance !== first.importance) {
+          occurrenceAttributes[date] = { estimatedMinutes: item.estimatedMinutes, importance: item.importance }
+        }
+        if (item.startAt && item.endAt && endShape(item) !== endShape(first)) {
+          occurrenceSlots[date] = { startAt: item.startAt, endAt: item.endAt }
+        }
+      }
       updates.push({ ...first, sourceText, needsReview: run.some(item => item.needsReview),
+        occurrenceAttributes, occurrenceSlots, aiAssessment: null,
         recurrence: { frequency: 'weekly', interval: stepDays / 7,
         startsOn: dates[0], endsOn: dates[dates.length - 1] },
         occurrenceCompletions: run.filter(item => Boolean(item.completedAt)).map(item =>
