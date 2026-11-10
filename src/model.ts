@@ -12,6 +12,15 @@ export interface OccurrenceSlot {
   endAt: string
 }
 
+export interface TaskAssessment {
+  importance: number | null
+  estimatedMinutes: number | null
+  ambiguous: boolean
+  dependencies: string[]
+  sourceSignature: string
+  assessedAt: string
+}
+
 export interface PlannerItem {
   id: string
   type: ItemType
@@ -30,6 +39,7 @@ export interface PlannerItem {
   recurrence: RecurrenceRule | null
   occurrenceCompletions: string[]
   occurrenceSlots: Record<string, OccurrenceSlot>
+  aiAssessment: TaskAssessment | null
   createdAt: string
   updatedAt: string
 }
@@ -40,6 +50,8 @@ export interface PlannerSettings {
   workEnd: string
   includeWeekends: boolean
   sleepTargetMinutes: number
+  excludedWeekdays: number[]
+  priorityTieBreaker: 'older' | 'shorter'
 }
 
 export interface ReminderRecord {
@@ -61,7 +73,9 @@ export const defaultSettings: PlannerSettings = {
   workStart: '09:00',
   workEnd: '18:00',
   includeWeekends: false,
-  sleepTargetMinutes: 480
+  sleepTargetMinutes: 480,
+  excludedWeekdays: [],
+  priorityTieBreaker: 'older'
 }
 
 export function newItem(type: ItemType): PlannerItem {
@@ -84,6 +98,7 @@ export function newItem(type: ItemType): PlannerItem {
     recurrence: null,
     occurrenceCompletions: [],
     occurrenceSlots: {},
+    aiAssessment: null,
     createdAt: now,
     updatedAt: now
   }

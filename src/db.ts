@@ -29,6 +29,15 @@ class PlannerDB extends Dexie {
       if (!Array.isArray(item.occurrenceCompletions)) item.occurrenceCompletions = []
       if (!item.occurrenceSlots) item.occurrenceSlots = {}
     }))
+    this.version(4).stores({
+      items: 'id, type, startAt, deadline, completedAt', settings: 'id', reminders: 'key, itemId'
+    }).upgrade(async tx => {
+      await tx.table('items').toCollection().modify(item => { if (item.aiAssessment === undefined) item.aiAssessment = null })
+      await tx.table('settings').toCollection().modify(setting => {
+        if (!Array.isArray(setting.excludedWeekdays)) setting.excludedWeekdays = []
+        if (!setting.priorityTieBreaker) setting.priorityTieBreaker = 'older'
+      })
+    })
   }
 }
 

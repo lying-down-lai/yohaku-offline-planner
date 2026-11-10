@@ -5,6 +5,7 @@ import { expandItems, type DisplayItem } from './recurrence'
 export interface ScheduleResult {
   scheduled: Array<{ id: string; startAt: string; endAt: string }>
   unscheduled: Array<{ id: string; reason: string }>
+  warnings: string[]
 }
 
 type Span = { start: number; end: number }
@@ -42,18 +43,31 @@ export function scheduleTasks(
   settings: PlannerSettings,
   horizonDays = 30
 ): ScheduleResult {
-  const result: ScheduleResult = { scheduled: [], unscheduled: [] }
+  const result: ScheduleResult = { scheduled: [], unscheduled: [], warnings: [] }
   const busy = items
     .filter(item => item.type === 'event' || (item.type === 'task' && !item.completedAt))
     .map(validSpan)
     .filter((span): span is Span => span !== null)
+  for (const item of items) {
+    if (item.type !== 'event' || item.completedAt || item.endAt) continue
+    if (!item.startAt) {
+      result.warnings.push(`「${item.title}」は開始・終了が不明なため、時間の衝突を完全には検証できません`)
+      continue
+    }
+    const start = Date.parse(item.startAt)
+    if (!Number.isFinite(start)) continue
+    busy.push({ start, end: addDays(startOfDay(now), horizonDays + 1).getTime() })
+    result.warnings.push(`「${item.title}」は終了時刻が不明なため、開始後の計画期間を空き時間とみなしません`)
+  }
 
   const tasks = items
-    .filter(item => item.type === 'task' && !item.completedAt && !item.needsReview && !validSpan(item))
+    .filter(item => item.type === 'task' && !item.completedAt && !validSpan(item))
     .sort((a, b) => {
       const aDeadline = a.deadline ? parseISO(a.deadline).getTime() : Infinity
       const bDeadline = b.deadline ? parseISO(b.deadline).getTime() : Infinity
-      return aDeadline - bDeadline || (b.importance ?? 0) - (a.importance ?? 0) || a.createdAt.localeCompare(b.createdAt)
+      return aDeadline - bDeadline || (b.importance ?? 0) - (a.importance ?? 0) ||
+        (settings.priorityTieBreaker === 'shorter' ? (a.estimatedMinutes ?? Infinity) - (b.estimatedMinutes ?? Infinity) : 0) ||
+        a.createdAt.localeCompare(b.createdAt)
     })
 
   for (const task of tasks) {
@@ -69,9 +83,14 @@ export function scheduleTasks(
       const day = addDays(startOfDay(now), dayOffset)
       const occurrenceDate = (task as DisplayItem).occurrenceDate
       if (occurrenceDate && format(day, 'yyyy-MM-dd') !== occurrenceDate) continue
-      if (!settings.includeWeekends && isWeekend(day)) continue
+      if ((!settings.includeWeekends && isWeekend(day)) || settings.excludedWeekdays?.includes(day.getDay())) continue
       const dayStart = localTimeOn(day, settings.workStart)
-      const dayEnd = localTimeOn(day, settings.workEnd)
+      const nextDay = addDays(day, 1)
+      const nextDayAllowed = (settings.includeWeekends || !isWeekend(nextDay)) &&
+        !settings.excludedWeekdays?.includes(nextDay.getDay())
+      const sleepCutoff = nextDayAllowed
+        ? localTimeOn(nextDay, settings.workStart) - settings.sleepTargetMinutes * 60_000 : Infinity
+      const dayEnd = Math.min(localTimeOn(day, settings.workEnd), sleepCutoff)
       let cursor = roundUp(Math.max(dayStart, now.getTime()))
       const latestEnd = Math.min(dayEnd, deadline)
 
@@ -94,7 +113,8 @@ export function scheduleTasks(
         endAt: new Date(chosen.end).toISOString()
       })
     } else {
-      result.unscheduled.push({ id: task.id, reason: '期限までの空き時間がありません' })
+      result.unscheduled.push({ id: task.id, reason: task.deadline && deadline < now.getTime()
+        ? '期限が過ぎています' : '期限までの作業時間に空き枠がありません' })
     }
   }
 

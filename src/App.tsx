@@ -4,11 +4,12 @@ import { addDays, format, isSameDay, parseISO, startOfDay, subDays } from 'date-
 import { ja } from 'date-fns/locale'
 import { db, replaceAll } from './db'
 import { compareItemTime, defaultSettings, newItem, type PlannerItem, type PlannerSettings } from './model'
-import { conflictsWithExisting, scheduleTasks } from './scheduler'
+import { conflictsWithExisting } from './scheduler'
 import { InAppDelivery, dueReminders, type ReminderNotice } from './reminders'
 import { createBackup, makeExtractionPrompt, makeImageExtractionPrompt, parseAiImport, parseBackup, withoutDuplicateEvents } from './transfer'
 import { formatGap, getTodayFlow } from './todayFlow'
 import { PlanningPanel } from './PlanningPanel'
+import { groupRepeats } from './groupRepeats'
 import { expandItems, expandOccurrence, recurrenceDates, recurrenceLabel, validRecurrence, type DisplayItem } from './recurrence'
 
 type Tab = 'today' | 'tasks' | 'calendar' | 'tools'
@@ -245,6 +246,19 @@ export default function App() {
   }, [toast])
 
   useEffect(() => {
+    if (!items.length) return
+    void db.transaction('rw', db.items, db.reminders, async () => {
+      const current = await db.items.toArray()
+      const grouped = groupRepeats(current)
+      for (const item of grouped.updates) await db.items.put(item)
+      for (const id of grouped.removeIds) {
+        await db.items.delete(id)
+        await db.reminders.where('itemId').equals(id).delete()
+      }
+    }).catch(error => setToast(`繰り返しの整理に失敗しました: ${describeError(error)}`))
+  }, [items])
+
+  useEffect(() => {
     const delivery = new InAppDelivery(notice => setNotices(current => [...current, notice]))
     let running = false
     const check = async () => {
@@ -290,9 +304,9 @@ export default function App() {
     const nextDate = recurrenceDates(item.recurrence, todayStart, addDays(parseISO(item.recurrence.endsOn), 1))[0]
     return nextDate ? expandOccurrence(item, nextDate) : item
   })
-  const unscheduledCount = activeTasks.filter(item => !item.startAt && !item.needsReview &&
+  const unscheduledCount = activeTasks.filter(item => !item.startAt &&
     (!item.recurrence || item.recurrence.endsOn >= todayKey)).length
-  const schedulableCount = activeTasks.filter(item => !item.startAt && !item.needsReview && item.estimatedMinutes !== null &&
+  const schedulableCount = activeTasks.filter(item => !item.startAt && item.estimatedMinutes !== null &&
     (!item.recurrence || (item.recurrence.endsOn >= todayKey &&
       item.recurrence.startsOn <= format(addDays(todayStart, 30), 'yyyy-MM-dd')))).length
   const todayCount = todayFlow.length
@@ -355,36 +369,6 @@ export default function App() {
       await db.reminders.where('itemId').equals(id).delete()
     })
     setToast('削除しました')
-  }
-
-  async function autoSchedule() {
-    const nowDate = new Date()
-    let scheduled = 0
-    let unscheduled = 0
-    try {
-      await db.transaction('rw', db.items, db.settings, async () => {
-        const latestItems = await db.items.toArray()
-        const latestSettings = await db.settings.get('main') ?? settings
-        const expanded = expandItems(latestItems, startOfDay(nowDate), addDays(startOfDay(nowDate), 31))
-        const byOccurrenceId = new Map(expanded.map(item => [item.id, item]))
-        const result = scheduleTasks(expanded, nowDate, latestSettings)
-        scheduled = result.scheduled.length
-        unscheduled = result.unscheduled.length
-        const now = new Date().toISOString()
-        const changedSlots = new Map<string, PlannerItem['occurrenceSlots']>()
-        for (const entry of result.scheduled) {
-          const occurrence = byOccurrenceId.get(entry.id)
-          if (occurrence?.seriesId && occurrence.occurrenceDate) {
-            const base = latestItems.find(item => item.id === occurrence.seriesId)!
-            const slots = changedSlots.get(base.id) ?? { ...base.occurrenceSlots }
-            slots[occurrence.occurrenceDate] = { startAt: entry.startAt, endAt: entry.endAt }
-            changedSlots.set(base.id, slots)
-          } else await db.items.update(entry.id, { startAt: entry.startAt, endAt: entry.endAt, updatedAt: now })
-        }
-        for (const [id, occurrenceSlots] of changedSlots) await db.items.update(id, { occurrenceSlots, updatedAt: now })
-      })
-      setToast(`${scheduled}件を配置しました${unscheduled ? `。${unscheduled}件は未配置です` : ''}`)
-    } catch (error) { setToast(`配置できませんでした: ${describeError(error)}`) }
   }
 
   async function updateSettings(next: PlannerSettings) {
@@ -462,7 +446,7 @@ export default function App() {
 
       {tab === 'tasks' && <>
         <section className="page-title"><p className="eyebrow">TO-DO LIST</p><h1>タスク</h1><p>やることを整理して、空いている時間に配置できます。</p></section>
-        <div className="toolbar"><button className="button primary" type="button" onClick={() => setEditing(newItem('task'))}>＋ タスクを追加</button><button className="button secondary" type="button" onClick={() => void autoSchedule()} disabled={!schedulableCount}>空き時間に配置</button></div>
+        <div className="toolbar"><button className="button primary" type="button" onClick={() => setEditing(newItem('task'))}>＋ タスクを追加</button><button className="button secondary" type="button" onClick={() => setTab('tools')}>仮の計画を確認</button></div>
         {unscheduledCount > 0 && !schedulableCount && <p className="hint">所要時間が未設定のタスクは、編集するかAIの計画提案で見積もれます。</p>}
         <div className="section-heading compact"><h2>進行中 <span className="count">{activeTasks.length}</span></h2></div>
         {taskListItems.length ? <div className="cards">{taskListItems.slice().sort((a, b) => Number(b.needsReview) - Number(a.needsReview) || (a.deadline ?? a.occurrenceDate ?? '9999').localeCompare(b.deadline ?? b.occurrenceDate ?? '9999')).map(item => <ItemCard key={item.id} item={item} {...cardHandlers} />)}</div> : <div className="empty-state"><span className="empty-illustration">✓</span><h3>進行中のタスクはありません</h3><p>新しいタスクを追加しましょう。</p></div>}
@@ -482,8 +466,15 @@ export default function App() {
         <section className="panel"><div className="panel-head"><span className="panel-icon">◷</span><div><h2>作業する時間</h2><p>自動配置で使う時間帯を設定します。</p></div></div>
           <div className="form-row settings-row"><label>開始<input type="time" value={settings.workStart} onChange={event => void updateSettings({ ...settings, workStart: event.target.value })} disabled={savingSettings} /></label><label>終了<input type="time" value={settings.workEnd} onChange={event => void updateSettings({ ...settings, workEnd: event.target.value })} disabled={savingSettings} /></label></div>
           <label className="check-label"><input type="checkbox" checked={settings.includeWeekends} onChange={event => void updateSettings({ ...settings, includeWeekends: event.target.checked })} />週末も配置する</label>
+          <div className="weekday-options"><p className="hint">配置しない曜日</p>{['日','月','火','水','木','金','土'].map((label, day) =>
+            <label className="check-label" key={day}><input type="checkbox" checked={settings.excludedWeekdays.includes(day)}
+              onChange={event => void updateSettings({ ...settings, excludedWeekdays: event.target.checked
+                ? [...settings.excludedWeekdays, day].sort() : settings.excludedWeekdays.filter(value => value !== day) })} />{label}</label>)}</div>
+          <label>同じ期限・重要度の並べ方<select value={settings.priorityTieBreaker}
+            onChange={event => void updateSettings({ ...settings, priorityTieBreaker: event.target.value as PlannerSettings['priorityTieBreaker'] })}>
+            <option value="older">登録が早い順</option><option value="shorter">短いタスクを先に</option></select></label>
         </section>
-        <section className="panel"><div className="panel-head"><span className="panel-icon">☾</span><div><h2>睡眠の目安</h2><p>AIが仮の睡眠枠を提案するときの目標です。</p></div></div><label>1日の目安<select value={settings.sleepTargetMinutes} onChange={event => void updateSettings({ ...settings, sleepTargetMinutes: Number(event.target.value) })} disabled={savingSettings}>{Array.from({ length: 17 }, (_, index) => (index + 8) * 30).map(minutes => <option key={minutes} value={minutes}>{minutes / 60}時間</option>)}</select></label><p className="hint">睡眠枠は提案を確認してから追加され、あとで編集できます。</p></section>
+        <section className="panel"><div className="panel-head"><span className="panel-icon">☾</span><div><h2>睡眠の目安</h2><p>翌日の作業開始まで確保する休息時間です。</p></div></div><label>1日の目安<select value={settings.sleepTargetMinutes} onChange={event => void updateSettings({ ...settings, sleepTargetMinutes: Number(event.target.value) })} disabled={savingSettings}>{Array.from({ length: 17 }, (_, index) => (index + 8) * 30).map(minutes => <option key={minutes} value={minutes}>{minutes / 60}時間</option>)}</select></label><p className="hint">確定済みの睡眠予定も、作業枠を探す際に避けます。</p></section>
         <section className="panel"><div className="panel-head"><span className="panel-icon">⇄</span><div><h2>バックアップ</h2><p>JSONファイルに保存・復元できます。</p></div></div><div className="button-row"><button type="button" className="button secondary" onClick={() => saveTextFile(createBackup(items, settings), `yohaku-backup-${format(new Date(), 'yyyy-MM-dd')}.json`)}>バックアップを保存</button><label className="button secondary file-button">ファイルから復元<input type="file" accept=".json,application/json" onChange={event => { void restore(event.target.files?.[0]); event.target.value = '' }} /></label></div><p className="hint">復元すると現在のデータは置き換わります。端末間の自動同期はありません。</p></section>
         <section className="panel">
           <div className="panel-head"><span className="panel-icon">✧</span><div><h2>外部AIから取り込む</h2><p>文章や予定の画像を外部AIに読み取らせ、結果だけ取り込みます。</p></div></div>

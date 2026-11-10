@@ -9,10 +9,10 @@ describe('dueReminders', () => {
     expect(dueReminders([item], new Date('2026-11-09T09:50:00+09:00'))).toHaveLength(1)
   })
 
-  it('does not remind for completed or unreviewed items', () => {
+  it('does not remind for completed items but keeps review informational', () => {
     const item = { ...newItem('task'), title: '確認', deadline: '2026-11-09T10:00:00+09:00' }
     const now = new Date('2026-11-09T09:55:00+09:00')
-    expect(dueReminders([{ ...item, completedAt: now.toISOString() }, { ...item, id: 'uncertain', needsReview: true }], now)).toHaveLength(0)
+    expect(dueReminders([{ ...item, completedAt: now.toISOString() }, { ...item, id: 'uncertain', needsReview: true }], now)).toHaveLength(1)
   })
 
   it('does not describe an already missed event as upcoming', () => {

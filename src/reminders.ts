@@ -24,7 +24,7 @@ export class InAppDelivery implements NotificationDelivery {
 export function dueReminders(items: DisplayItem[], now: Date): ReminderNotice[] {
   const notices: ReminderNotice[] = []
   for (const item of items) {
-    if (item.completedAt || item.reminderMinutes === null || item.needsReview) continue
+    if (item.completedAt || item.reminderMinutes === null) continue
     const target = item.startAt ?? (item.type === 'task' ? item.deadline : null)
     if (!target) continue
     const targetTime = parseISO(target).getTime()

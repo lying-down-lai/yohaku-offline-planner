@@ -1,65 +1,59 @@
 import { expect, it } from 'vitest'
 import { defaultSettings, newItem } from './model'
-import { makePlanningPrompt, parsePlanningProposal } from './planning'
+import { buildSchedulePreview, makePlanningPrompt, parseTaskAssessment, storedAssessment,
+  tasksNeedingAssessment } from './planning'
 
-const now = new Date('2026-11-09T00:00:00Z')
-const settings = { ...defaultSettings, workStart: '00:00', workEnd: '23:59', includeWeekends: true }
+const task = () => ({ ...newItem('task'), title: '資料作成', notes: '提出前に確認', estimatedMinutes: null,
+  needsReview: true, deadline: new Date(2026, 10, 11, 17).toISOString() })
+const response = (id: string, duration: number | null = 60) => JSON.stringify({ schemaVersion: 1,
+  kind: 'taskAssessment', assessments: [{ id, importance: 4, estimatedMinutes: duration,
+    ambiguous: false, dependencies: [] }] })
 
-function proposal(taskId: string, startAt: string | null, endAt: string | null, sleepBlocks: Array<{ startAt: string; endAt: string }> = []) {
-  return JSON.stringify({ schemaVersion: 1, kind: 'scheduleProposal', taskUpdates: [
-    { id: taskId, importance: 4, estimatedMinutes: 60, startAt, endAt }
-  ], sleepBlocks, warnings: [] })
-}
-
-it('includes current task details and constraints in the portable planning prompt', () => {
-  const task = { ...newItem('task'), title: '課題', notes: '提出前に確認', deadline: '2026-11-11T12:00:00+09:00' }
-  const prompt = makePlanningPrompt([task], settings, now, 'Asia/Tokyo')
-  expect(prompt).toContain(task.id)
-  expect(prompt).toContain('提出前に確認')
-  expect(prompt).toContain('SLEEP_TARGET: 480 minutes')
-  expect(prompt).toContain('Never move or delete a fixed event')
-  expect(prompt).toContain('scheduleProposal')
+it('asks for strict compact JSON with no scheduling timestamps', () => {
+  const item = task()
+  const prompt = makePlanningPrompt([item], defaultSettings, new Date(2026, 10, 10, 8), 'Asia/Tokyo')
+  expect(prompt).toContain('taskAssessment')
+  expect(prompt).toContain('No markdown fences')
+  expect(prompt).toContain('JSON Schema mode')
+  expect(prompt).toContain(item.id)
+  expect(prompt).toContain('needsReview is informational')
 })
 
-it('accepts a nonconflicting proposed task and sleep block', () => {
-  const task = { ...newItem('task'), title: '課題', estimatedMinutes: null, deadline: '2026-11-11T12:00:00+09:00' }
-  const plan = parsePlanningProposal(proposal(task.id,
-    '2026-11-10T10:00:00+09:00', '2026-11-10T11:00:00+09:00',
-    [{ startAt: '2026-11-10T23:00:00+09:00', endAt: '2026-11-11T07:00:00+09:00' }]), [task], settings, now)
-  expect(plan.taskUpdates[0].importance).toBe(4)
-  expect(plan.sleepBlocks).toHaveLength(1)
+it('validates syntax, schema, IDs, known attributes and dependencies independently', () => {
+  const item = task()
+  expect(() => parseTaskAssessment('{bad', [item])).toThrow('JSON構文エラー')
+  expect(() => parseTaskAssessment('{}', [item])).toThrow('スキーマエラー')
+  expect(() => parseTaskAssessment(response('missing'), [item])).toThrow('無効なタスクID')
+  expect(() => parseTaskAssessment(response(item.id, 20), [{ ...item, estimatedMinutes: 60 }])).toThrow('所要時間')
+  expect(() => parseTaskAssessment(response(item.id).replace('"dependencies":[]', '"dependencies":["missing"]'), [item])).toThrow('依存先ID')
 })
 
-it('rejects overlap with a fixed appointment and deadline violations', () => {
-  const task = { ...newItem('task'), title: '課題', estimatedMinutes: null, deadline: '2026-11-10T10:30:00+09:00' }
-  const event = { ...newItem('event'), title: '授業', startAt: '2026-11-10T10:00:00+09:00', endAt: '2026-11-10T11:00:00+09:00' }
-  const text = proposal(task.id, '2026-11-10T10:00:00+09:00', '2026-11-10T11:00:00+09:00')
-  expect(() => parsePlanningProposal(text, [task, event], settings, now)).toThrow('期限')
-  expect(() => parsePlanningProposal(text, [{ ...task, deadline: null }, event], settings, now)).toThrow('重なって')
+it('schedules uncertain tasks provisionally without mutating the original', () => {
+  const item = task()
+  const assessment = parseTaskAssessment(response(item.id), [item])
+  const now = new Date(2026, 10, 10, 8)
+  const plan = buildSchedulePreview([item], defaultSettings, now, assessment)
+  expect(plan.result.scheduled).toHaveLength(1)
+  expect(item.startAt).toBeNull()
+  expect(item.needsReview).toBe(true)
 })
 
-it('rejects moving an already scheduled task or fabricating completion', () => {
-  const task = { ...newItem('task'), title: '課題', estimatedMinutes: 60,
-    startAt: '2026-11-10T10:00:00+09:00', endAt: '2026-11-10T11:00:00+09:00' }
-  expect(() => parsePlanningProposal(proposal(task.id,
-    '2026-11-10T12:00:00+09:00', '2026-11-10T13:00:00+09:00'), [task], settings, now)).toThrow('既存の配置')
-  expect(() => parsePlanningProposal(proposal(task.id, null, null).replace('"warnings":[]', '"warnings":[],"completedAt":"2026-11-10T13:00:00+09:00"'), [task], settings, now)).toThrow()
+it('reuses assessments until source data changes', () => {
+  const item = task()
+  const value = parseTaskAssessment(response(item.id), [item])[0]
+  const saved = { ...item, aiAssessment: storedAssessment(item, value) }
+  expect(tasksNeedingAssessment([saved])).toHaveLength(0)
+  expect(tasksNeedingAssessment([{ ...saved, notes: '内容変更' }])).toHaveLength(1)
+  expect(tasksNeedingAssessment([saved], [saved.id])).toHaveLength(1)
 })
 
-it('rejects a reversed task interval before it can be saved', () => {
-  const task = { ...newItem('task'), title: '課題' }
-  expect(() => parsePlanningProposal(proposal(task.id,
-    '2026-11-10T11:00:00+09:00', '2026-11-10T10:00:00+09:00'), [task], settings, now))
-    .toThrow('終了は開始より後')
-})
-
-it('treats later occurrences of a repeated event as occupied in AI plans', () => {
-  const task = { ...newItem('task'), title: '課題' }
-  const event = { ...newItem('event'), title: '授業', startAt: '2026-11-10T10:00:00+09:00',
-    endAt: '2026-11-10T11:00:00+09:00',
-    recurrence: { frequency: 'daily' as const, interval: 1, startsOn: '2026-11-10', endsOn: '2026-11-12' } }
-  const prompt = makePlanningPrompt([task, event], settings, now, 'Asia/Tokyo')
-  expect(prompt).toContain(`${event.id}::2026-11-11`)
-  expect(() => parsePlanningProposal(proposal(task.id, '2026-11-11T10:00:00+09:00',
-    '2026-11-11T11:00:00+09:00'), [task, event], settings, now)).toThrow('重なって')
+it('avoids repeated fixed events and leaves unknown duration unplaced', () => {
+  const item = task()
+  const event = { ...newItem('event'), title: '授業', startAt: new Date(2026, 10, 10, 9).toISOString(),
+    endAt: new Date(2026, 10, 10, 10).toISOString(),
+    recurrence: { frequency: 'daily' as const, interval: 1, startsOn: '2026-11-10', endsOn: '2026-11-11' } }
+  const now = new Date(2026, 10, 10, 8)
+  const plan = buildSchedulePreview([item, event], defaultSettings, now, parseTaskAssessment(response(item.id), [item, event]))
+  expect(new Date(plan.result.scheduled[0].startAt).getHours()).toBe(10)
+  expect(buildSchedulePreview([item], defaultSettings, now).result.unscheduled[0].reason).toContain('所要時間')
 })

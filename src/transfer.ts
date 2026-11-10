@@ -47,7 +47,9 @@ const settingsSchema = z.object({
   workStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   workEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   includeWeekends: z.boolean(),
-  sleepTargetMinutes: z.number().int().min(240).max(720).default(480)
+  sleepTargetMinutes: z.number().int().min(240).max(720).default(480),
+  excludedWeekdays: z.array(z.number().int().min(0).max(6)).max(7).default([]),
+  priorityTieBreaker: z.enum(['older', 'shorter']).default('older')
 }).strict().refine(value => value.workStart < value.workEnd, '作業終了時刻は開始時刻より後にしてください')
 
 const storedItemSchema = aiItemSchema.safeExtend({
@@ -58,7 +60,10 @@ const storedItemSchema = aiItemSchema.safeExtend({
   createdAt: iso,
   updatedAt: iso,
   occurrenceCompletions: z.array(dateKey).max(10000).default([]),
-  occurrenceSlots: z.record(dateKey, slotSchema).default({})
+  occurrenceSlots: z.record(dateKey, slotSchema).default({}),
+  aiAssessment: z.object({ importance, estimatedMinutes: minutes,
+    ambiguous: z.boolean(), dependencies: z.array(z.string().min(1)).max(20),
+    sourceSignature: z.string().max(30000), assessedAt: iso }).strict().nullable().default(null)
 })
 
 const backupSchema = z.object({
@@ -97,6 +102,7 @@ export function parseAiImport(text: string): PlannerItem[] {
     reminderMinutes: 10,
     occurrenceCompletions: [],
     occurrenceSlots: {},
+    aiAssessment: null,
     createdAt: now,
     updatedAt: now
   }))
