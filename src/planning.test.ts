@@ -17,6 +17,8 @@ it('asks for strict compact JSON with no scheduling timestamps', () => {
   expect(prompt).toContain('JSON Schema mode')
   expect(prompt).toContain(item.id)
   expect(prompt).toContain('needsReview is informational')
+  expect(prompt).toContain('one physical line')
+  expect(prompt).toContain('Do not wrap the whole object in quotes')
 })
 
 it('validates syntax, schema, IDs, known attributes and dependencies independently', () => {

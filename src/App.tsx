@@ -9,6 +9,7 @@ import { InAppDelivery, dueReminders, type ReminderNotice } from './reminders'
 import { createBackup, makeExtractionPrompt, makeImageExtractionPrompt, parseAiImport, parseBackup, withoutDuplicateEvents } from './transfer'
 import { formatGap, getTodayFlow } from './todayFlow'
 import { PlanningPanel } from './PlanningPanel'
+import { BulkEventPanel } from './BulkEventPanel'
 import { groupRepeats } from './groupRepeats'
 import { expandItems, expandOccurrence, recurrenceDates, recurrenceLabel, validRecurrence, type DisplayItem } from './recurrence'
 
@@ -508,6 +509,7 @@ export default function App() {
           <p className="hint">取り込んだ日時や内容は編集できます。不明な予定は「要確認」として残ります。</p>
         </section>
         <PlanningPanel items={items} settings={settings} onApplied={message => { setTab('today'); setToast(message) }} />
+        <BulkEventPanel items={items} onApplied={message => { setTab('calendar'); setToast(message) }} />
         <section className="panel"><div className="panel-head"><span className="panel-icon">▣</span><div><h2>アプリとして使う</h2><p>ホーム画面に追加すると、全画面に近い表示で使えます。</p></div></div>{installPrompt ? <button className="button primary" type="button" onClick={() => { void installPrompt.prompt(); setInstallPrompt(null) }}>インストールする</button> : <p className="hint">Android: ブラウザの「インストール」または「ホーム画面に追加」。iPhone: Safariの共有メニューから「ホーム画面に追加」。</p>}<p className="hint">リマインダーはアプリを開いているときに表示されます。</p></section>
       </>}
     </main>

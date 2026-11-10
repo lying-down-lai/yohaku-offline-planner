@@ -9,6 +9,8 @@ describe('validated JSON transfer', () => {
       expect(prompt).toContain('Use 24-hour time')
       expect(prompt).toContain('If a full date and time cannot be determined, use null')
       expect(prompt).toContain('Timezone (IANA):')
+      expect(prompt).toContain('one physical line')
+      expect(prompt).toContain('Do not wrap the whole object in quotes')
     }
   })
 
