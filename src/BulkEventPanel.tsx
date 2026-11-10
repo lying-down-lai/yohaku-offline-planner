@@ -62,7 +62,7 @@ export function BulkEventPanel({ items, onApplied }: { items: PlannerItem[]; onA
     {error && <p className="form-error" role="alert">{error}。JSONを直すか、プロンプトを再送してください。予定は変更されていません。</p>}
     {preview && <div className="plan-preview" aria-label="予定変更の確認"><h3>変更前の確認</h3><p>{preview.length}件の予定を変更します。</p>
       <ul>{preview.map(change => <li key={change.id}><strong>{titles.get(change.id)}</strong> · {label(change.originalStartAt)}～{label(change.originalEndAt)} → {label(change.startAt)}～{label(change.endAt)}</li>)}</ul>
-      <button type="button" className="button primary" disabled={applying} onClick={() => void apply()}>{applying ? '反映中…' : 'この変更案を承認して反映'}</button>
+      <button type="button" className="button primary" disabled={applying || preview.length === 0} onClick={() => void apply()}>{applying ? '反映中…' : 'この変更案を承認して反映'}</button>
     </div>}
     <p className="hint">固定予定や配置済みタスクとの重なり、過去日時、ID、元の日時をアプリが確認します。繰り返し予定は系列全体の時刻が変わり、個別に変更済みの回はそのまま残ります。</p>
   </section>

@@ -25,6 +25,10 @@ it('validates a change without mutating its event', () => {
   expect(item.startAt).toBe('2026-11-11T09:00:00+09:00')
 })
 
+it('accepts an empty proposal when no requested edit is feasible', () => {
+  expect(validateEventChanges('{"schemaVersion":1,"kind":"eventTimeChanges","changes":[]}', [event()], now)).toEqual([])
+})
+
 it('rejects malformed, stale, unknown, overlapping, and past changes', () => {
   const item = event()
   const busy = { ...newItem('task'), title: '作業',

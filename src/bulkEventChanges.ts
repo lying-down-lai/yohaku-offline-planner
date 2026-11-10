@@ -11,7 +11,7 @@ const changeSchema = z.object({
   startAt: timestamp, endAt: timestamp
 }).strict()
 const responseSchema = z.object({ schemaVersion: z.literal(1), kind: z.literal('eventTimeChanges'),
-  changes: z.array(changeSchema).min(1).max(200) }).strict()
+  changes: z.array(changeSchema).max(200) }).strict()
 
 export type EventTimeChange = z.infer<typeof changeSchema>
 
@@ -27,7 +27,7 @@ export function makeEventChangePrompt(items: PlannerItem[], instruction: string,
     'Use only event IDs from EVENT_DATA. Return only events whose times the user wants changed. Never create, delete, or complete an item. Preserve every event title and all fields other than startAt/endAt.',
     'For a recurring event, changing the template startAt/endAt changes the time of the entire series. Keep its first occurrence on recurrence.startsOn. Existing per-occurrence overrides remain unchanged.',
     'Copy originalStartAt and originalEndAt exactly from EVENT_DATA. Output new startAt/endAt as YYYY-MM-DDTHH:mm:ss±HH:mm (or Z) with the correct offset for that date and timezone. Both must be known; endAt must be later than startAt.',
-    'Do not propose past timestamps or overlaps with other existing events, scheduled tasks, or other proposed changes. If the request is ambiguous or impossible, omit that change; do not guess.',
+    'Do not propose past timestamps or overlaps with other existing events, scheduled tasks, or other proposed changes. If the request is ambiguous or impossible, omit that change; return changes:[] if none qualify. Do not guess.',
     'Return exactly one compact JSON object on one physical line. First character { and last character }. Do not wrap the whole object in quotes or encode it as a JSON string.',
     'No markdown fences, prose, indentation, line breaks, or backslash-n/backslash-r sequences between JSON tokens. Use double-quoted strings, no trailing commas, and no extra keys.',
     'SCHEMA: {"schemaVersion":1,"kind":"eventTimeChanges","changes":[{"id":"existing event ID","originalStartAt":"ISO 8601 datetime","originalEndAt":"ISO 8601 datetime","startAt":"ISO 8601 datetime","endAt":"ISO 8601 datetime"}]}',
@@ -81,7 +81,8 @@ export function validateEventChanges(text: string, items: PlannerItem[], now = n
     return recurrenceEnd ? addDays(parseISO(recurrenceEnd), 2).getTime() : Date.parse(change.endAt)
   }))
   const expanded = expandItems(changed, from, new Date(last + 1))
-  const moved = expanded.filter(item => seen.has(item.seriesId ?? item.id))
+  const moved = expanded.filter(item => seen.has(item.seriesId ?? item.id) &&
+    !(item.seriesId && item.occurrenceDate && byId.get(item.seriesId)?.occurrenceSlots[item.occurrenceDate]))
   const occupied = expanded.filter(item => (item.type === 'event' || (item.type === 'task' && !item.completedAt)) &&
     item.startAt && item.endAt)
   if (expanded.length > 20000) throw new Error('確認する予定が多すぎます。変更範囲を小さくしてください')
